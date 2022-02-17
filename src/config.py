@@ -1,15 +1,17 @@
+import json
+
 # Configuration used throughout the code. 
 # This is essentially the set of all hyperparameters, be them related to learning, biophyiscal, or network layout.
 # Each entry is of the form <NAME>: [<DEFAULT VALUE>, <TYPE>]. The value can change but the type should not be changed.
 CFG = {
+       'hidden_layers': [[100], list],         # List of hidden layer sizes. This does NOT include input/output layers which are fixed size.
+       'neuron_model': ['HH_Gap', str],        # Neuron model to use. 
+       
        'lr': [0.1, float],                     # Learning rate.
-       
        'sim_t': [2000, int],                   # Number of simulation timesteps in DT units.
-       
        'dt' : [0.01, float],                   # Dt for numerical integration.
        
        'train_batch_sz': [20, int],            # Batch size for training.
-       
        'test_batch_sz': [100, int],            # Batch size for testing. Does not affect learning but using a big batch size is faster.
                                                # Too big can cause memory overflows so be careful.
                                               
@@ -56,3 +58,10 @@ def set_cfg_value(str_key, str_val):
     except KeyError:
         print(f'ERROR: Tried to modify key that does not exist in convig: {str_key}')
         raise
+        
+def serialize(fname):
+    with open(fname, 'w') as fout:
+        simple_dict = dict(CFG)
+        for key in simple_dict:
+            simple_dict[key] = simple_dict[key][0]
+        fout.write(json.dumps(simple_dict, indent=1))
