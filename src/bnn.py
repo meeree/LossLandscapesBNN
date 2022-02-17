@@ -1,3 +1,4 @@
+# Biological neural network models.
 from config import CFG
 import matplotlib.pyplot as plt
 import torch

@@ -4,6 +4,8 @@ import json
 # This is essentially the set of all hyperparameters, be them related to learning, biophyiscal, or network layout.
 # Each entry is of the form <NAME>: [<DEFAULT VALUE>, <TYPE>]. The value can change but the type should not be changed.
 CFG = {
+       'identifier': 'RUN',                    # Identifier for current run. Not necessary to set because timstamp is also used to save data. 
+       
        'hidden_layers': [[100], list],         # List of hidden layer sizes. This does NOT include input/output layers which are fixed size.
        'neuron_model': ['HH_Gap', str],        # Neuron model to use. 
        
