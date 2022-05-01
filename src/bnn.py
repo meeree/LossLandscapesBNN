@@ -17,8 +17,11 @@ class BNN(nn.Module):
         self.layers = []
         for d1, d2 in zip(self.dims[:-1], self.dims[1:]):
             self.Ws.append(nn.Linear(d1, d2, bias=False))
-            self.layers.append(NeuronModel(d2))
-            
+            if CFG.use_DNN:
+                self.layers.append(torch.nn.Sigmoid())
+            else:
+                self.layers.append(NeuronModel(d2))
+
         # Need to add weights as parameters of model.
         for i, W in enumerate(self.Ws):
             self.__setattr__(f'W{i+1}', W)
@@ -28,6 +31,16 @@ class BNN(nn.Module):
         for W, layer in zip(self.Ws, self.layers):
             z = W(T)
             T = layer(z)
+            plt.imshow(T[0, :, :].detach().cpu().numpy().transpose(), aspect='auto', cmap='seismic')
+            plt.show()
+            if CFG.plot and CFG.use_DNN:
+                plt.figure(dpi=500)
+                plt.subplot(2,1,1)
+                plt.plot(T[0, :, :].detach().cpu().numpy(), linewidth=1.0)
+                plt.subplot(2,1,2)
+                plt.plot(z[0, :, :].detach().cpu().numpy(), linewidth=1.0)
+                plt.show()
+                
         return T
 
 class FH(nn.Module):
@@ -58,7 +71,7 @@ class HH_Synaptic(nn.Module):
         gna = CFG.gna; gk = CFG.gk; gl = CFG.gl;
         Ena = CFG.Ena; Ek = CFG.Ek; El = CFG.El;
         gs = CFG.gs; Vs = CFG.Vs; Iapp = CFG.Iapp;
-        Vt = CFG.Vt; Kp = CFG.Kp; 
+        Vt = CFG.Vt; Kp = CFG.Kp;
         a_d = CFG.a_d; a_r = CFG.a_r; dt = CFG.dt;
         
         V = torch.full((B, N, self.L), -70.0).to('cuda')
@@ -97,9 +110,6 @@ class HH_Synaptic(nn.Module):
             h[:, k, :] = (aH * dt + (1 - dt / 2 * (aH + bH)) * h[:, k-1, :].clone()) / (dt / 2 * (aH + bH) + 1)    
             y[:, k, :] = (a_d * z[:, k-1, :] * dt + (1 - dt / 2 * (a_d * z[:, k-1, :] + a_r)) * y[:, k-1, :].clone()) / (dt / 2 * (a_d * z[:, k-1, :] + a_r) + 1)
 
-        plt.plot(V[0, :, :].detach().cpu().numpy())
-        plt.show()
-
         T = torch.sigmoid((V - Vt) / Kp)
         return T
 
@@ -107,7 +117,8 @@ class HH_Gap(nn.Module):
     def __init__(self, L):
         super().__init__()
         self.L = L
-        
+        self.V = None
+       
     def forward(self, z):
         B, N = z.shape[:2] # Batch size and number of timesteps
         gna = CFG.gna; gk = CFG.gk; gl = CFG.gl;
@@ -115,12 +126,12 @@ class HH_Gap(nn.Module):
         Iapp = CFG.Iapp; Vt = CFG.Vt; Kp = CFG.Kp; 
         dt = CFG.dt;
         
-        V = torch.full((B, N, self.L), -70.0).to('cuda')
         m = torch.zeros((B, N, self.L)).to('cuda')
         n = torch.zeros((B, N, self.L)).to('cuda')
         h = torch.ones((B, N, self.L)).to('cuda')
         pow1 = torch.zeros((B, self.L)).to('cuda')
         pow2 = torch.zeros((B, self.L)).to('cuda')  
+        self.V = torch.ones((B, N, self.L)).to('cuda') * -70.0
         
         for k in range(1, N):
            pow1 = gna * (m[:, k-1, :].clone() ** 3) * h[:, k-1, :].clone()
@@ -129,28 +140,48 @@ class HH_Gap(nn.Module):
            G_scaled = (dt / 2) * (pow1 + pow2 + gl)
            E = pow1 * Ena + pow2 * Ek + gl * El
            
-           V[:, k, :] = (V[:, k-1, :].clone() * (1 - G_scaled) + dt * (E + Iapp + z[:, k-1, :])) / (1 + G_scaled)
+           self.V[:, k, :] = (self.V[:, k-1, :].clone() * (1 - G_scaled) + dt * (E + Iapp + z[:, k-1, :])) / (1 + G_scaled)
            
-           aN = 0.02 * (V[:, k, :] - 25) / (1 - torch.exp((-V[:, k, :] + 25) / 9.0))
-           aM = 0.182 * (V[:, k, :] + 35) / (1 - torch.exp((-V[:, k, :] - 35) / 9.0))
-           aH = 0.25 * torch.exp((-V[:, k, :] - 90) / 12.0)
+           aN = 0.02 * (self.V[:, k, :] - 25) / (1 - torch.exp((-self.V[:, k, :] + 25) / 9.0))
+           aM = 0.182 * (self.V[:, k, :] + 35) / (1 - torch.exp((-self.V[:, k, :] - 35) / 9.0))
+           aH = 0.25 * torch.exp((-self.V[:, k, :] - 90) / 12.0)
                
-           bN = -0.002 * (V[:, k, :] - 25) / (1 - torch.exp((V[:, k, :] - 25) / 9.0))
-           bM = -0.124 * (V[:, k, :] + 35) / (1 - torch.exp((V[:, k, :] + 35) / 9.0))
-           bH = 0.25 * torch.exp((V[:, k, :] + 34) / 12.0)
+           bN = -0.002 * (self.V[:, k, :] - 25) / (1 - torch.exp((self.V[:, k, :] - 25) / 9.0))
+           if CFG.beta_n_modified:
+               bN = 0.125 * torch.exp((-self.V[:, k, :] + 70) / 19.7)
+           bM = -0.124 * (self.V[:, k, :] + 35) / (1 - torch.exp((self.V[:, k, :] + 35) / 9.0))
+           bH = 0.25 * torch.exp((self.V[:, k, :] + 34) / 12.0)
            
-           if torch.any(V[:, k, :] == 25) or torch.any(V[:, k, :] == -35):
-               aN[torch.where(V[:, k, :] == 25)] = 0.18
-               bN[torch.where(V[:, k, :] == 25)] = 0.08
-               aM[torch.where(V[:, k, :] == -35)] = 1.638
-               bM[torch.where(V[:, k, :] == -35)] = 1.16
+           if torch.any(self.V[:, k, :] == 25) or torch.any(self.V[:, k, :] == -35):
+               aN[torch.where(self.V[:, k, :] == 25)] = 0.18
+               bN[torch.where(self.V[:, k, :] == 25)] = 0.08
+               aM[torch.where(self.V[:, k, :] == -35)] = 1.638
+               bM[torch.where(self.V[:, k, :] == -35)] = 1.16
 
            m[:, k, :] = (aM * dt + (1 - dt / 2 * (aM + bM)) * m[:, k-1, :].clone()) / (dt / 2 * (aM + bM) + 1)
            n[:, k, :] = (aN * dt + (1 - dt / 2 * (aN + bN)) * n[:, k-1, :].clone()) / (dt / 2 * (aN + bN) + 1)
            h[:, k, :] = (aH * dt + (1 - dt / 2 * (aH + bH)) * h[:, k-1, :].clone()) / (dt / 2 * (aH + bH) + 1)    
 
-        plt.plot(V[0, :, :].detach().cpu().numpy())
-        plt.show()
+           # Lateral inhibition.
+           if CFG.lat_inhibition:
+               with torch.no_grad():
+                    V_sub = self.V[:, k, :] + 70
+                    below = V_sub.le(60)
+                    self.V[:, k, :] = torch.where(below, V_sub * (below.sum(axis=1).reshape(-1,1) / self.L) - 70,  V_sub - 70)
 
-        T = torch.sigmoid((V - Vt) / Kp)
+        if CFG.plot:
+            plt.figure(figsize=(15,5))
+            plt.subplot(1,2,1)
+            plt.plot(z[0, :, :].detach().cpu().numpy(), linewidth=1.0)
+            plt.xticks(range(0,N+1,500), [f'{i*CFG.dt}' for i in range(0,N+1,500)])
+            plt.xlabel('Time (ms)')
+            plt.title('A. Weighted Input', fontsize=18)
+            plt.subplot(1,2,2)
+            plt.plot(self.V[0, :, :].detach().cpu().numpy(), linewidth=1.0)
+            plt.xticks(range(0,N+1,500), [f'{i*CFG.dt}' for i in range(0,N+1,500)])
+            plt.xlabel('Time (ms)')
+            plt.title('B. Voltage Response', fontsize=18)
+            plt.show()
+
+        T = torch.sigmoid((self.V - Vt) / Kp)
         return T

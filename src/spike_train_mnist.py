@@ -3,6 +3,7 @@ import torch
 from torch.distributions.exponential import Exponential
 from torch.utils.data import Dataset
 from os.path import exists
+import matplotlib.pyplot as plt
 
 torch.set_default_dtype(torch.float32)
 
@@ -29,23 +30,25 @@ class SpikeTrainMNIST(Dataset):
             n_samples = CFG.n_samples_test
             offset = CFG.n_samples_val # Split testing data into (validation U testing) disjoint union.
         elif phase == 'train':
+            offset = CFG.train_offset
             n_samples = CFG.n_samples_train
         elif phase == 'validation':
             n_samples = CFG.n_samples_val
         else:
             print(f'ERROR: Invalid phase for MNIST data: {phase}')
             raise ValueError(phase)
-        print(f'Loading spiketrains for phase: {phase}, n_samples = {n_samples}')
+        print(f'Loading spiketrains for phase: {phase}, n_samples = {n_samples}, offset = {offset}')
         
         # If in validation, use first n_samples_val
         self.spiketrains = torch.zeros((n_samples, CFG.sim_t, 28*28))
         self.labels = torch.nn.functional.one_hot(mnist_dset.targets[offset:], num_classes=10) * 1.0
         fname = '../data/spiketrains'
         fname += '_' + phase
+        fname += '_' + str(offset)
         fname += '_' + str(n_samples)
         fname += '_' + str(CFG.sim_t)
         fname += '_' + str(CFG.poisson_max_firings_per)        
-        fname += '_' + str(CFG.poisson_n_timsteps_spike)
+        fname += '_' + str(CFG.poisson_n_timesteps_spike)
         fname += '.pt'
                 
         if exists(fname):
@@ -55,7 +58,12 @@ class SpikeTrainMNIST(Dataset):
                 img = mnist_dset[offset + i]
                 if (i+1) % 500 == 0:
                     print("%.1f%%" % (100 * i / n_samples))
-                to_spiketrain(self.spiketrains[i, :, :], img[0][0, :, :], CFG.sim_t, CFG.poisson_max_firings_per, CFG.poisson_n_timsteps_spike)
+                # if i < 10:
+                #     plt.imshow(img[0][0, :, :])
+                #     plt.title(i) 
+                #     print(i, self.labels[i])
+                #     plt.show()
+                to_spiketrain(self.spiketrains[i, :, :], img[0][0, :, :], CFG.sim_t, CFG.poisson_max_firings_per, CFG.poisson_n_timesteps_spike)
             torch.save(self.spiketrains, fname)
 
     def __len__(self):
