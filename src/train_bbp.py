@@ -11,6 +11,7 @@ import time
 from datetime import datetime
 import json
 import matplotlib as mpl
+from progressbar import ProgressBar
 torch.set_default_dtype(torch.float32)
 
 # Configuration is done by modifying global CFG dictionary -- no need to send it as a parameter.
@@ -76,59 +77,14 @@ class Trainer:
            
         # Train.
         for batch, expected in train_loader:
-            
-            changes = torch.load('../data/changes_4.pt')
-            print(changes.shape)
-            plt.imshow(torch.abs(changes).detach().cpu().numpy().transpose(), aspect='auto', cmap='hot', vmax=0.1)
-            plt.colorbar()
-         #   plt.xticks(range(0,CFG.sim_t+1,500), [f'{i*CFG.dt}' for i in range(0,CFG.sim_t+1,500)])
-            plt.xlabel('Time (ms)')
-            plt.ylabel('Weight (flattened)')
-            plt.title('D. Gradients Raster Plot', fontsize=15)
-            plt.savefig('../figures/changes_grid.pdf')
-            plt.show()
-            
-            plt.plot(changes.cpu().numpy())
-        #    plt.xticks(range(0,CFG.sim_t+1,500), [f'{i*CFG.dt}' for i in range(0,CFG.sim_t+1,500)])
-            plt.title('C. Instantenous Gradients', fontsize=15)
-            plt.xlabel('Time (ms)')
-            plt.ylabel('Gradient')
-            plt.savefig('../figures/changes_plot.pdf')
-            plt.show()
-            
-            changes = torch.zeros(CFG.sim_t  // 25, 28 * 28 * 100).to('cuda')
-            for k in range(2100 // 25, CFG.sim_t // 25):
-                print(k)
-                self.optimizer.zero_grad()   
-                V2_out = self.model(batch.to('cuda'))
-                out_avg = torch.mean(V2_out[:, k*25:(k+1)*25, :], dim=1)
-                print(out_avg.shape)
-                loss = loss_fun(out_avg, expected.to('cuda'))
-                loss_record.append(loss.detach())
-                           
-                loss.backward()
-                
-                changes[k, :] = self.model.Ws[0].weight.grad[:, :].reshape(-1)
-                
-                plt.imshow(V2_out[0, :, :].detach().cpu().numpy().transpose(), aspect='auto', cmap='seismic')
-                plt.colorbar()
-                plt.xticks(range(0,CFG.sim_t+1,500), [f'{i*CFG.dt}' for i in range(0,CFG.sim_t+1,500)])
-                plt.xlabel('Time (ms)')
-                plt.ylabel('Neuron index')
-                plt.title('B. Raster Plot', fontsize=15)
-                plt.savefig('../figures/spiking_grid.pdf')
-                plt.show()
-                
-                plt.plot(V2_out[0, :, :].detach().cpu().numpy())
-                plt.xticks(range(0,CFG.sim_t+1,500), [f'{i*CFG.dt}' for i in range(0,CFG.sim_t+1,500)])
-                plt.xlabel('Time (ms)')
-                plt.ylabel('Neuron output')
-                plt.title('A. Output Layer Traces', fontsize=15)
-                plt.savefig('../figures/spiking_plot.pdf')
-                plt.show()
-                
-            torch.save(changes, '../data/changes_4.pt')
-            exit()
+            self.optimizer.zero_grad()   
+            V2_out = self.model(batch.to('cuda'))
+            out_avg = torch.mean(V2_out, dim=1)
+
+            loss = loss_fun(out_avg, expected.to('cuda'))
+            loss_record.append(loss.detach())
+                          
+            loss.backward()
             
             # Set NaN values to zero! This is a hack way to fix this issue, but I think
             # NaNs only occur very rarely due to 0/0 in gating vars, so it is not a big issue.
@@ -211,3 +167,39 @@ class Trainer:
             accuracy_out.close()
         print("%f" % (n_hit / n_total * 100.0))
         return float(n_hit / n_total * 100.0)
+    
+    # This function measures the gradients within a sliding window. 
+    # This is useful to look at instantaneous gradients instead of the total, averaged, gradient.
+    # WE PERFORM THIS ON A SINGLE SAMPLE, NOT MULTIPLE!
+    def measure_sliding_gradients(self, window_size, stride=-1):
+        loss_fun = nn.MSELoss().cuda()
+        if stride == -1:
+            stride = window_size # By default, slide window with no overlap.
+        
+        # Pick a random training sample to look at. 
+        idx = int(torch.randint(0, len(self.train_dataset), ()))
+        sample, target = self.train_dataset[idx]
+        target = target.cuda()
+        sample = sample.unsqueeze(0)
+        
+        # Feed forward.
+        T2_out = self.model(sample.cuda()).squeeze() # Shape is [SIM_T, OUTPUT_SIZE].
+        window_cnt = int((T2_out.shape[0] - window_size) / stride + 1) 
+        avgs = torch.zeros((window_cnt, T2_out.shape[1])).cuda()
+        for i in range(window_cnt):
+            avgs[i, :] = torch.mean(T2_out[i * stride: i * stride+window_size, :], 0)
+            
+        pbar = ProgressBar()
+        print("Computing sliding window gradients. This will take a while ...")
+        sliding_grad_1 = torch.zeros(window_cnt, 28 * 28 * CFG.hidden_layers[0]).cuda()
+        sliding_grad_2 = torch.zeros(window_cnt, CFG.hidden_layers[0] * 10).cuda()
+        for i in pbar(range(window_cnt)):
+            self.optimizer.zero_grad()
+            loss = loss_fun(avgs[i, :], target)
+            loss.backward(retain_graph=True)   
+            sliding_grad_1[i, :] = self.model.Ws[0].weight.grad[:, :].flatten()
+            sliding_grad_2[i, :] = self.model.Ws[1].weight.grad[:, :].flatten()
+        
+        fl_prefix = f'{self.identifier}_{window_size}_{stride}_slidingGrad'
+        torch.save(sliding_grad_1, f'../data/{fl_prefix}1.pt')
+        torch.save(sliding_grad_2, f'../data/{fl_prefix}2.pt')

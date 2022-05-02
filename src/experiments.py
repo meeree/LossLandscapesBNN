@@ -136,7 +136,36 @@ import torch
         
 # exit()
 
+sliding_grad_1 = torch.load('../data/20_20_40___05_01_2022_R_10_10_slidingGrad1.pt')
+sliding_grad_2 = torch.load('../data/20_20_40___05_01_2022_R_10_10_slidingGrad2.pt')
+print(sliding_grad_1.shape, sliding_grad_2.shape)
+            
+            
 
+changes = torch.load('../data/20_20_40___05_01_2022_R_10_10_slidingGrad2.pt')
+print(changes.shape)
+plt.imshow(torch.abs(changes).detach().cpu().numpy().transpose(), aspect='auto', cmap='hot', vmax=0.1)
+plt.colorbar()
+ #   plt.xticks(range(0,CFG.sim_t+1,500), [f'{i*CFG.dt}' for i in range(0,CFG.sim_t+1,500)])
+plt.xlabel('Time (ms)')
+plt.ylabel('Weight (flattened)')
+plt.title('D. Gradients Raster Plot', fontsize=15)
+plt.savefig('../figures/changes_grid.pdf')
+plt.show()
+
+plt.plot(changes.cpu().numpy())
+#    plt.xticks(range(0,CFG.sim_t+1,500), [f'{i*CFG.dt}' for i in range(0,CFG.sim_t+1,500)])
+plt.title('C. Instantenous Gradients', fontsize=15)
+plt.xlabel('Time (ms)')
+plt.ylabel('Gradient')
+plt.savefig('../figures/changes_plot.pdf')
+plt.show()
+            
+            
+            
+            
+            
+            
 CFG.n_samples_train = 1
 CFG.n_samples_val = 0 
 CFG.train_batch_sz = 1 
@@ -148,5 +177,7 @@ def custom_plotter(trainer, batch, expected):
     print(torch.argmax(expected[0]))
 
 trainer = Trainer(False, '../data/model_12_55_30___03_29_2022_48000_DATASET_lr_0.002__23.pt')
+trainer.measure_sliding_gradients(10)
+exit()
 trainer.train(custom_plotter = custom_plotter) 
 exit()
