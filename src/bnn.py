@@ -7,11 +7,11 @@ from torch import nn
 torch.set_default_dtype(torch.float32)
 
 class BNN(nn.Module):
-    def __init__(self):
+    def __init__(self, input_dim=28*28, output_dim=10):
         super().__init__()
         NeuronModel = eval(CFG.neuron_model)
         
-        self.dims = [28*28] + CFG.hidden_layers + [10]
+        self.dims = [input_dim] + CFG.hidden_layers + [output_dim]
         print('Network dimensions: ' + str(self.dims))
         self.Ws = []
         self.layers = []
@@ -31,15 +31,17 @@ class BNN(nn.Module):
         for W, layer in zip(self.Ws, self.layers):
             z = W(T)
             T = layer(z)
-            plt.imshow(T[0, :, :].detach().cpu().numpy().transpose(), aspect='auto', cmap='seismic')
-            plt.show()
-            if CFG.plot and CFG.use_DNN:
-                plt.figure(dpi=500)
-                plt.subplot(2,1,1)
-                plt.plot(T[0, :, :].detach().cpu().numpy(), linewidth=1.0)
-                plt.subplot(2,1,2)
-                plt.plot(z[0, :, :].detach().cpu().numpy(), linewidth=1.0)
+            if CFG.plot:
+                plt.imshow(T[0, :, :].detach().cpu().numpy().transpose(), aspect='auto', cmap='seismic')
                 plt.show()
+                
+                if CFG.use_DNN:
+                    plt.figure(dpi=500)
+                    plt.subplot(2,1,1)
+                    plt.plot(T[0, :, :].detach().cpu().numpy(), linewidth=1.0)
+                    plt.subplot(2,1,2)
+                    plt.plot(z[0, :, :].detach().cpu().numpy(), linewidth=1.0)
+                    plt.show()
                 
         return T
 

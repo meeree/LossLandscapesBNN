@@ -9,7 +9,7 @@ from mpl_toolkits.axes_grid.parasite_axes import SubplotHost
 import copy
 from os.path import exists
 import matplotlib as mpl
-
+import torch
 
 # Set font sizes
 SMALL_SIZE = 8
@@ -22,7 +22,94 @@ mpl.rcParams['axes.labelsize'] = MEDIUM_SIZE
 mpl.rcParams['xtick.labelsize'] = SMALL_SIZE 
 mpl.rcParams['ytick.labelsize'] = SMALL_SIZE  
 mpl.rcParams['legend.fontsize'] = SMALL_SIZE 
-mpl.rcParams['figure.titlesize'] = BIGGER_SIZE 
+mpl.rcParams['figure.titlesize'] = BIGGER_SIZE
+
+CFG.n_samples_train = 0
+CFG.n_samples_val = 500
+CFG.test_batch_sz = 500
+CFG.plot = False
+
+
+trainer = Trainer(False, '../data/model_06_05_27___02_25_2022_2000_20_EPOCHS_BATCH_SIZE_50_N_SAMPLES_2000_lr_0.001__19.pt')
+inputs, target = trainer.val_dataset[0]
+inputs, target = inputs.unsqueeze(0), target.unsqueeze(0)
+loss_fun = torch.nn.MSELoss().to('cuda')
+
+losses = {}
+vars = ['gna', 'gk', 'gl', 'Ena', 'Ek', 'El', 'Iapp']
+percents = np.concatenate([np.linspace(0.5, 0.98, 10), np.linspace(0.99, 1.01, 5), np.linspace(1.02, 1.5, 10)])
+if exists('../data/losses_variation.txt'):
+    with open('../data/losses_variation.txt', 'r') as fin:
+        losses = json.load(fin)    
+else:
+    losses['percents'] = percents.tolist()
+    for var in vars:
+        losses[var] = []
+        val_init = CFG[var][0]
+        for i,p in enumerate(percents):
+            CFG[var][0] = val_init * p
+            with torch.no_grad():
+                avg_out = torch.mean(trainer.model(inputs.cuda()), dim=1)
+                losses[var].append(loss_fun(avg_out, target.cuda()).item())
+                print(var, val_init, CFG[var][0], losses[var][-1])
+        CFG[var][0] = val_init # Reset
+ 
+    with open('../data/losses_variation.txt', 'w') as fout:
+        fout.write(json.dumps(losses, indent=1))  
+        
+  
+def plot_physiology(prefix, title, subvars, dashed):
+    plt.figure(dpi=600)
+    # ax = plt.subplot(111)
+    width = 0.7 if dashed else 3.0
+    colors = ['dodgerblue', 'crimson', 'olive']
+    for i, var in enumerate(subvars):
+        line, = plt.plot(np.array(losses['percents']), losses[var], '-', linewidth=width, markersize=1.5, 
+                         label=var, color=colors[i])
+        if dashed:
+            line.set_dashes([1, 0.3])
+        plt.text(losses['percents'][-1] * 0.97, losses[var][-1] * 1.01, f'{var}', color=colors[i], fontsize=13)
+        
+    # # Shrink current axis by 20%
+    # box = ax.get_position()
+    # ax.set_position([box.x0, box.y0, box.width * 0.8, box.height])
+    
+    # Put a legend to the right of the current axis
+ #   ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+    plt.title(title, fontsize=18)
+    plt.xlabel('Percent of Original (%)')
+    plt.ylabel('Loss')
+    plt.savefig(f'../figures/{prefix}_losses_variation.pdf')
+    plt.show()
+    
+plot_physiology('conductance', 'A. Conductances', ['gna', 'gk', 'gl'], False)
+plot_physiology('reversal', 'B. Reversal Potentials', ['Ena', 'Ek', 'El'], False)
+#plot_physiology('all', vars, True)  
+    
+# loss_grid = np.zeros((len(percents), len(percents)))
+# El_init, gl_init = CFG.El, CFG.gl
+# for i,p1 in enumerate(percents):
+#     for j,p2 in enumerate(percents):
+#         CFG.El, CFG.gl = p1 * El_init, p2 * gl_init
+#         with torch.no_grad():
+#             avg_out = torch.mean(trainer.model(inputs.cuda()), dim=1)
+#             loss_grid[i, j] = loss_fun(avg_out, target.cuda()).item()
+#             print(i, j, loss_grid[i, j])
+
+
+# print(loss_grid)
+# np.savetxt('../data/loss_grid.out', loss_grid)   
+loss_grid = np.genfromtxt('../data/loss_grid.out')      
+ 
+plt.imshow(loss_grid, cmap='seismic')
+plt.colorbar()
+plt.show()
+
+plt.figure(dpi=600)        
+X, Y = np.meshgrid(percents, percents)
+ax = plt.axes(projection='3d')
+ax.contourf(X, Y, loss_grid)
+plt.show()
 
 def misc_plots():
     def plot_accuracy_epochs(prefix, title, epochs=range(5), n_samples=2000, batches_per_record=5, batch_size=50):
@@ -52,8 +139,8 @@ def misc_plots():
         
         plt.ylabel("Accuracy (%)")
         plt.title(title)
-        for i in epochs:
-            plt.axvspan(i * n_samples, (i+1) * n_samples, facecolor=[(i % 2) * 0.1 + 0.9 for j in range(3)], alpha=1.0)
+        # for i in epochs:
+        #     plt.axvspan(i * n_samples, (i+1) * n_samples, facecolor=[(i % 2) * 0.1 + 0.9 for j in range(3)], alpha=1.0)
         
         ax2 = plt.gca().twiny()
         offset = 0, -5 # Position of the second axis
@@ -117,8 +204,8 @@ def accuracy():
             plt.xlabel('Epoch')
         plt.xlim([0, len(epochs)*n_samples])           
         plt.ylabel("Accuracy (%)")
-        for i in epochs:
-            plt.axvspan(i * n_samples, (i+1) * n_samples, facecolor=[(i % 2) * 0.05 + 0.95 for j in range(3)], alpha=1.0)
+        # for i in epochs:
+        #     plt.axvspan(i * n_samples, (i+1) * n_samples, facecolor=[(i % 2) * 0.05 + 0.95 for j in range(3)], alpha=1.0)
           
         if training_v_testing:
             train_accuracy_fl = '../data/' + prefix + '_TRAIN_ACCURACY.txt'
@@ -148,7 +235,7 @@ def accuracy():
 #    accuracy_full_plot('06_05_27___02_25_2022_2000_20_EPOCHS_BATCH_SIZE_50_N_SAMPLES_2000_lr_0.001_', range(20), 2000, 10, color='palegoldenrod', outline='darkseagreen')
     accuracy_full_plot('21_44_03___03_03_2022_BETA_N_lr_0.1_', range(20), 2000, 10, color='darkviolet', outline='dodgerblue')
     plt.legend(['DNN', 'BNN'], loc='lower right')
-    plt.title('A. 2000 First Samples, Multiple Epochs')
+    plt.title('A. 2000 Samples, Multiple Epochs', fontsize=18)
     plt.savefig('../figures/fig_1_accuracies.pdf')
     plt.show()
     
@@ -156,21 +243,21 @@ def accuracy():
     accuracy_full_plot('16_49_54___03_31_2022_DNN_60000_DATASET_lr_0.0025_', range(24), 2000, 10, single_epoch=True)
     accuracy_full_plot('12_55_30___03_29_2022_48000_DATASET_lr_0.002_', range(24), 2000, 10, single_epoch=True, color='darkviolet', outline='dodgerblue')
     plt.legend(['DNN', 'BNN'], loc='lower right')
-    plt.title('C. Many Samples, Single Epoch')
+    plt.title('C. Many Samples, Single Epoch', fontsize=18)
     plt.savefig('../figures/fig_1_full_accuracies.pdf')
     plt.show()
 
     plt.figure(dpi=600, figsize=(5,4))
     accuracy_full_plot('15_58_38___03_04_2022_DNN_lr_0.002_', range(20), 2000, 10, training_v_testing=True)
-    plt.title('DNN Training Versus Testing')
+    plt.title('DNN Training Versus Testing', fontsize=18)
     plt.savefig('../figures/fig_1_DNN_training_compare.pdf')
     plt.show()
     plt.figure(dpi=600, figsize=(5,4))
     accuracy_full_plot('21_44_03___03_03_2022_BETA_N_lr_0.1_', range(20), 2000, 10, training_v_testing=True)
-    plt.title('B. BNN Training Versus Testing')
+    plt.title('B. BNN Training Versus Testing', fontsize=18)
     plt.savefig('../figures/fig_1_BNN_training_compare.pdf')
     plt.show()
-# accuracy()
+accuracy()
 
 def plot_voltage_trace(prefix, epochs=range(5), n_samples=2000, batches_per_record=5, batch_size=50):
     model_str = f'../data/model_{prefix}_{epochs[-1]}.pt'
@@ -355,62 +442,3 @@ plot_weights('16_49_54___03_31_2022_DNN_60000_DATASET_lr_0.0025_', 24, inds, 'je
 # plt.title('Accuracy Over Batches: Single Epoch')
 # plt.show()
 # quit()
-
-
-
-CFG.n_samples_train = 0
-CFG.n_samples_val = 500
-CFG.test_batch_sz = 500
-CFG.plot = False
-
-
-trainer = Trainer(False, '../data/model_06_05_27___02_25_2022_2000_20_EPOCHS_BATCH_SIZE_50_N_SAMPLES_2000_lr_0.001__19.pt')
-accuracies = {}
-vars = ['gna', 'gk', 'gl', 'Ena', 'Ek', 'El', 'Iapp']
-
-if exists('../data/physiology_variation.txt'):
-    with open('../data/physiology_variation.txt', 'r') as fin:
-        accuracies = json.load(fin)
-else: 
-    percents = np.concatenate([np.linspace(0.5, 0.98, 10), np.linspace(0.99, 1.01, 5), np.linspace(1.02, 1.5, 10)])
-    percents = np.linspace(-3.0, 3.0, 11)
-    accuracies['percents'] = percents.tolist()
-    for var in vars:
-        accuracies[var] = []
-        val_init = CFG[var][0]
-        for i,p in enumerate(percents):
-            CFG[var][0] = val_init + p
-            print(var, val_init, CFG[var][0])
-            accuracies[var].append(trainer.validate())
-        CFG[var][0] = val_init # Reset
-        plt.plot(100 * percents, accuracies[var], '-o')
-        
-    with open('../data/physiology_variation.txt', 'w') as fout:
-        fout.write(json.dumps(accuracies, indent=1))
-  
-def plot_physiology(prefix, subvars, dashed):
-    plt.figure(dpi=600)
-    ax = plt.subplot(111)
-    width = 0.7 if dashed else 1.7
-    for var in subvars:
-        line, = plt.plot(np.array(accuracies['percents']), accuracies[var], '-o', linewidth=width, markersize=1.5, label=var)
-        if dashed:
-            line.set_dashes([1, 0.3])
-    
-    # Shrink current axis by 20%
-    box = ax.get_position()
-    ax.set_position([box.x0, box.y0, box.width * 0.8, box.height])
-    
-    # Put a legend to the right of the current axis
-    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
-    
-    
-    plt.title('Physiological Variation')
-    plt.xlabel('Increment')
-    plt.ylabel('Accuracy (%)')
-    plt.savefig(f'../figures/{prefix}_physiology_variation.pdf')
-    plt.show()
-    
-plot_physiology('conductance', ['gna', 'gk', 'gl'], False)
-plot_physiology('reversal', ['Ena', 'Ek', 'El', 'Iapp'], False)
-plot_physiology('all', vars, True)
