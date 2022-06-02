@@ -70,6 +70,7 @@ class Trainer:
     # If batches_val is nonzero, every batches_val batches we will validate and save the model to a file.
     def train(self, epoch=0, batches_val=-1, custom_plotter=None):
         loss_fun = nn.MSELoss().to('cuda')
+  #      loss_fun = nn.CrossEntropyLoss().to('cuda')
         loss_record = []
         start_time = time.time()
         train_loader = torch.utils.data.DataLoader(self.train_dataset, batch_size=CFG.train_batch_sz, shuffle=True)
@@ -77,6 +78,7 @@ class Trainer:
            
         # Train.
         for batch, expected in train_loader:
+            print(batch_idx)
             self.optimizer.zero_grad()   
             V2_out = self.model(batch.to('cuda'))
             out_avg = torch.mean(V2_out, dim=1)
@@ -95,33 +97,27 @@ class Trainer:
             if custom_plotter is not None:
                 custom_plotter(self, batch, expected)
             
-            if batch_idx % 20 == 0:
-                print(batch_idx, float(loss.detach()), time.time() - start_time)
+            if CFG.plot and CFG.plot_all and batch_idx % 20 == 0:
                 start_time = time.time()
-                
-                v = V2_out[0, :, :].detach().cpu().numpy()
-                plt.plot(v)
-                plt.title("%d" % batch_idx)
-                plt.show()
             
-                if batch_idx % 20 == 0:
-                    plt.imshow(self.model.Ws[0].weight.grad.cpu().numpy(), aspect='auto', cmap='seismic')
-                    plt.colorbar()
-                    plt.show()
-                    
-                    plt.imshow(self.model.Ws[1].weight.grad.cpu().numpy(), aspect='auto', cmap='seismic', vmin=-0.00025, vmax=0.0)
-                    plt.colorbar()
-                    plt.show()
-                    
-                    plt.plot(loss_record)
-                    plt.title('Loss %d' % batch_idx)
-                    plt.xlabel('Batch index')
-                    plt.ylabel('Loss')
-                    plt.show()  
+                plt.imshow(self.model.Ws[0].weight.grad.cpu().numpy(), aspect='auto', cmap='seismic')
+                plt.colorbar()
+                plt.show()
+                
+                plt.imshow(self.model.Ws[1].weight.grad.cpu().numpy(), aspect='auto', cmap='seismic', vmin=-0.00025, vmax=0.0)
+                plt.colorbar()
+                plt.show()
+                
+                plt.plot(loss_record)
+                plt.title('Loss %d' % batch_idx)
+                plt.xlabel('Batch index')
+                plt.ylabel('Loss')
+                plt.show()  
                     
             batch_idx += 1
             
             if batches_val > 0 and batch_idx % batches_val == 0:
+                print(batch_idx, float(loss.detach()), time.time() - start_time)
                 self.validate(epoch, batch_idx)
                 if self.save:
                     torch.save(self.model.state_dict(), f'../data/model_{self.identifier}_{epoch}_{batch_idx}.pt')
@@ -129,13 +125,6 @@ class Trainer:
             
         if self.save:
            torch.save(self.model.state_dict(), f'../data/model_{self.identifier}_{epoch}.pt')
-            
-        plt.figure(dpi=600)
-        plt.plot(loss_record)
-        plt.title('Loss - Simple MNIST Example')
-        plt.xlabel('Batch index')
-        plt.ylabel('Loss')
-        plt.show()
         
     def validate(self, epoch=0, batch_idx=-1, use_val_dataset=True):
         dataset = self.val_dataset if use_val_dataset else self.train_dataset
@@ -173,6 +162,7 @@ class Trainer:
     # WE PERFORM THIS ON A SINGLE SAMPLE, NOT MULTIPLE!
     def measure_sliding_gradients(self, window_size, stride=-1):
         loss_fun = nn.MSELoss().cuda()
+    #    loss_fun = nn.CrossEntropyLoss().to('cuda')
         if stride == -1:
             stride = window_size # By default, slide window with no overlap.
         
@@ -188,6 +178,9 @@ class Trainer:
         avgs = torch.zeros((window_cnt, T2_out.shape[1])).cuda()
         for i in range(window_cnt):
             avgs[i, :] = torch.mean(T2_out[i * stride: i * stride+window_size, :], 0)
+            
+        fl_prefix = f'{self.identifier}_{window_size}_{stride}_networkOut'
+        torch.save(T2_out, f'../data/{fl_prefix}.pt')
             
         pbar = ProgressBar()
         print("Computing sliding window gradients. This will take a while ...")

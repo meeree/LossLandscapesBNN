@@ -31,10 +31,7 @@ class BNN(nn.Module):
         for W, layer in zip(self.Ws, self.layers):
             z = W(T)
             T = layer(z)
-            if CFG.plot:
-                plt.imshow(T[0, :, :].detach().cpu().numpy().transpose(), aspect='auto', cmap='seismic')
-                plt.show()
-                
+            if CFG.plot and CFG.plot_all:
                 if CFG.use_DNN:
                     plt.figure(dpi=500)
                     plt.subplot(2,1,1)
@@ -176,14 +173,13 @@ class HH_Gap(nn.Module):
             plt.subplot(1,2,1)
             plt.plot(z[0, :, :].detach().cpu().numpy(), linewidth=1.0)
             plt.xticks(range(0,N+1,500), [f'{i*CFG.dt}' for i in range(0,N+1,500)])
-            plt.xlabel('Time (ms)')
+            plt.xlabel('Time (ms)', fontsize=14)
             plt.title('A. Weighted Input', fontsize=18)
             plt.subplot(1,2,2)
             plt.plot(self.V[0, :, :].detach().cpu().numpy(), linewidth=1.0)
             plt.xticks(range(0,N+1,500), [f'{i*CFG.dt}' for i in range(0,N+1,500)])
-            plt.xlabel('Time (ms)')
+            plt.xlabel('Time (ms)', fontsize=14)
             plt.title('B. Voltage Response', fontsize=18)
-            plt.show()
 
         T = torch.sigmoid((self.V - Vt) / Kp)
         return T

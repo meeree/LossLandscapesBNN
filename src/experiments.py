@@ -98,24 +98,25 @@ from bnn import BNN
 #         # CFG.beta_n_modified = False
      
 
-#config.CFG.use_DNN = True
+config.CFG.use_DNN = True
 CFG.n_samples_val = 500
 CFG.test_batch_sz = 250
 CFG.train_batch_sz = 50
+CFG.beta_n_modified = True
 #CFG.dt = 0.02 # 2 times bigger DT  
 for lr in [0.002]:
     CFG.lr = lr
 #    CFG.hidden_layers = [100, 100]
-    for n_samples in [60000]:
-        CFG.identifier = f'RERUN_{lr}_2'
+    for n_samples in [40000]:
+        CFG.identifier = f'BETA_N_DNN_RERUN_{lr}_4'
         CFG.n_samples_train = 2000
         CFG.plot = False
         print(CFG.use_DNN)
         trainer = Trainer()
         for i in range(n_samples // 2000):
             print(i)
-            CFG.train_offset = i * 2000
-            trainer.load_mnist() # Reload mnist with new train_offset.
+          #  CFG.train_offset = i * 2000
+          #  trainer.load_mnist() # Reload mnist with new train_offset.
             trainer.train(i, 10)
         # trainer.validate()
 

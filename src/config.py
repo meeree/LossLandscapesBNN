@@ -23,6 +23,7 @@ CFG = {
         'poisson_max_firings_per': [10, int],  # Maximum number of firings per pixel after conversion to Poisson spiketrain. 
         'poisson_n_timesteps_spike': [100, int],# Duration of a spike in spiketrain in Poisson conversion. This should be close to the real neuron. 
         'plot': [True, bool],                  # Plot results during learning/validation.
+        'plot_all': [True, bool],
         'use_DNN': [False, bool],              # Use DNN instead of BNN.
     #======================HH=NEURON=PARAMETERS===========================================
         'gna': [40.0, float],
