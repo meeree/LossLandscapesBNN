@@ -44,8 +44,8 @@ class Trainer:
             
         # Load MNIST and spiketrain MNIST validation and training sets.
         self.load_mnist()
+        self.loss_fun = nn.MSELoss().to('cuda')
 
-        
     def load_mnist(self):
         transform=transforms.Compose([
             transforms.ToTensor()
@@ -66,11 +66,14 @@ class Trainer:
     def load_model_from_file(self, pretrained):
         self.model.load_state_dict(torch.load(pretrained))
         self.model = self.model.to('cuda')
+        
+    def evaluate_single_batch(self, batch, expected):
+         V2_out = self.model(batch.to('cuda'))
+         out_avg = torch.mean(V2_out, dim=1)
+         return self.loss_fun(out_avg, expected.to('cuda'))
 
     # If batches_val is nonzero, every batches_val batches we will validate and save the model to a file.
     def train(self, epoch=0, batches_val=-1, custom_plotter=None):
-        loss_fun = nn.MSELoss().to('cuda')
-  #      loss_fun = nn.CrossEntropyLoss().to('cuda')
         loss_record = []
         start_time = time.time()
         train_loader = torch.utils.data.DataLoader(self.train_dataset, batch_size=CFG.train_batch_sz, shuffle=True)
@@ -80,10 +83,7 @@ class Trainer:
         for batch, expected in train_loader:
             print(batch_idx)
             self.optimizer.zero_grad()   
-            V2_out = self.model(batch.to('cuda'))
-            out_avg = torch.mean(V2_out, dim=1)
-
-            loss = loss_fun(out_avg, expected.to('cuda'))
+            loss = self.evaluate_single_batch(batch, expected)
             loss_record.append(loss.detach())
                           
             loss.backward()
@@ -161,8 +161,6 @@ class Trainer:
     # This is useful to look at instantaneous gradients instead of the total, averaged, gradient.
     # WE PERFORM THIS ON A SINGLE SAMPLE, NOT MULTIPLE!
     def measure_sliding_gradients(self, window_size, stride=-1):
-        loss_fun = nn.MSELoss().cuda()
-    #    loss_fun = nn.CrossEntropyLoss().to('cuda')
         if stride == -1:
             stride = window_size # By default, slide window with no overlap.
         
@@ -188,7 +186,7 @@ class Trainer:
         sliding_grad_2 = torch.zeros(window_cnt, CFG.hidden_layers[0] * 10).cuda()
         for i in pbar(range(window_cnt)):
             self.optimizer.zero_grad()
-            loss = loss_fun(avgs[i, :], target)
+            loss = self.loss_fun(avgs[i, :], target)
             loss.backward(retain_graph=True)   
             sliding_grad_1[i, :] = self.model.Ws[0].weight.grad[:, :].flatten()
             sliding_grad_2[i, :] = self.model.Ws[1].weight.grad[:, :].flatten()

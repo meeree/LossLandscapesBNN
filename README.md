@@ -1,2 +1,2 @@
-# BBP
-Backpropogation on networks of biological (Hodgkin-Huxley like) neurons
+# LossLandscapesBNN
+Active research code. Blog with details: https://meeree.github.io/loss_landscape_bnn.html 

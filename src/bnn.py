@@ -3,6 +3,7 @@ from config import CFG
 import matplotlib.pyplot as plt
 import torch
 from torch import nn
+from torchviz import make_dot
 
 torch.set_default_dtype(torch.float32)
 
@@ -41,7 +42,71 @@ class BNN(nn.Module):
                     plt.show()
                 
         return T
+    
+# A BNN with S copies of the weight + random noise.
+class Noisy_BNN(nn.Module):
+    def __init__(self, S, input_dim=28*28, output_dim=10):
+        super().__init__()
+        NeuronModel = eval(CFG.neuron_model)
+        
+        self.dims = [input_dim] + CFG.hidden_layers + [output_dim]
+        print('Network dimensions: ' + str(self.dims))
+        self.Ws, self.noises, self.layers = [], [], []
+        self.zs = []
+        self.S = S
+        for d1, d2 in zip(self.dims[:-1], self.dims[1:]):
+            # Optimization: store transpose matrices instead of original.
+            with torch.no_grad():
+                W_template = nn.Linear(d2, d1, bias=False).weight
+                W_template = W_template.to('cuda')
+                W_template = W_template.unsqueeze(0) # Batch size dimension.
+                self.Ws.append(W_template.unsqueeze(0).repeat(S, 1, 1, 1)) # Samples dimension.
+                self.noises.append(torch.zeros_like(self.Ws[-1]))
+            self.Ws[-1] = self.Ws[-1].detach()
+            self.Ws[-1].requires_grad = True
+            self.zs.append(None)
+            if CFG.use_DNN:
+                self.layers.append(torch.nn.Sigmoid())
+            else:
+                self.layers.append(NeuronModel(d2))
 
+        # Need to add weights as parameters of model.
+        for i, W in enumerate(self.Ws):
+            self.__setattr__(f'W{i+1}', W)
+            
+        
+    def forward(self, batch : torch.Tensor, stddev) -> torch.Tensor:
+        # Add noise.
+        if stddev > 0:
+            for i in range(len(self.noises)):
+                noise = torch.normal(mean=0.0, std=stddev * torch.ones_like(self.noises[i]))
+                noise[0, :, :, :] = 0.0 # Get loss at origin. Necessary for least squares fit.
+                noise = noise.reshape((noise.shape[0], noise.shape[1], -1))
+                self.noises[i] *= 0.0
+                if i == 1:
+                    # for s in range(1,noise.shape[0]):
+                    #     noise[s, :, :] = 0.0
+                    #     noise[s, :, s-1] = stddev
+                    noise = noise.reshape(self.noises[i].shape)
+                    self.noises[i][:, :, :, :] = noise[:, :, :, :]   
+                self.Ws[i] += self.noises[i]
+            
+        T = batch
+        T = T.unsqueeze(0).repeat(self.S, 1, 1, 1)
+        T = torch.ones_like(T)
+        for idx, (W, layer) in enumerate(zip(self.Ws, self.layers)):
+            # Note that W is already transposed.
+            self.zs[idx] = torch.matmul(T, W)
+            T = self.zs[idx]
+            # T = layer(z.reshape((-1, z.shape[2], z.shape[3])))     
+            # T = T.reshape((self.S, -1, T.shape[1], T.shape[2]))
+            
+        # Cancel noise.
+        if stddev > 0:
+            for i in range(len(self.noises)):
+                self.Ws[i] = self.Ws[i] - self.noises[i]
+        return T
+    
 class FH(nn.Module):
     def __init__(self, L):
         super().__init__()
