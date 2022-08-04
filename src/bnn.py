@@ -63,16 +63,15 @@ class Noisy_BNN(nn.Module):
                 self.Ws.append(W_template.unsqueeze(0).repeat(S, 1, 1, 1)) # Samples dimension.
                 self.noises.append(torch.zeros_like(self.Ws[-1]))
             self.Ws[-1] = self.Ws[-1].detach()
+            self.Ws[-1] = torch.nn.Parameter(self.Ws[-1])
             self.Ws[-1].requires_grad = True
             self.zs.append(None)
             if CFG.use_DNN:
                 self.layers.append(torch.nn.Sigmoid())
             else:
                 self.layers.append(NeuronModel(d2))
-
-        # Need to add weights as parameters of model.
-        for i, W in enumerate(self.Ws):
-            self.__setattr__(f'W{i+1}', W)
+        
+        self.Ws = torch.nn.ParameterList(self.Ws)
             
         
     def forward(self, batch : torch.Tensor, stddev) -> torch.Tensor:
@@ -89,7 +88,7 @@ class Noisy_BNN(nn.Module):
                     #     noise[s, :, s-1] = stddev
                     noise = noise.reshape(self.noises[i].shape)
                     self.noises[i][:, :, :, :] = noise[:, :, :, :]   
-                self.Ws[i] += self.noises[i]
+                self.Ws[i] = self.Ws[i] + self.noises[i]
             
         T = batch
         T = T.unsqueeze(0).repeat(self.S, 1, 1, 1)
@@ -97,7 +96,7 @@ class Noisy_BNN(nn.Module):
         for idx, (W, layer) in enumerate(zip(self.Ws, self.layers)):
             # Note that W is already transposed.
             self.zs[idx] = torch.matmul(T, W)
-            T = self.zs[idx]
+            T = torch.sigmoid(self.zs[idx])
             # T = layer(z.reshape((-1, z.shape[2], z.shape[3])))     
             # T = T.reshape((self.S, -1, T.shape[1], T.shape[2]))
             
