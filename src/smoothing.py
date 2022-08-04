@@ -61,20 +61,18 @@ def train(use_autodiff, S = 500, plot = False, n_samples = 1, log_timing = False
     CFG.n_samples_train = n_samples
     CFG.identifier = str(n_samples) + '_ NON_SMOOTHED'
     
-  #  torch.manual_seed(0)
+    torch.manual_seed(0)
     trainer = Trainer()
     trainer.model = Noisy_BNN(S).to('cuda')
-    trainer.optimizer = torch.optim.Adam(trainer.model.Ws, lr = CFG.lr)
+    trainer.optimizer = torch.optim.Adam(trainer.model.parameters(), lr = CFG.lr)
     dataloader = torch.utils.data.DataLoader(trainer.train_dataset, batch_size=1, shuffle=True)
     loss_log, grad_log = [], [[], []]
     for idx, (batch, expected) in enumerate(dataloader):
-        print_cuda_mem(f'{idx}, 1')
+        trainer.optimizer.zero_grad()
         with torch.set_grad_enabled(use_autodiff):
             t0 = time()
-            trainer.optimizer.zero_grad()
             loss_fun = torch.nn.MSELoss(reduction='none').to('cuda')
             out = trainer.model(batch.to('cuda'), STD)
-            print_cuda_mem(f'{idx}, 2')
             mean_out = torch.mean(out, dim=2)
             target = expected.to('cuda').unsqueeze(0).repeat((out.shape[0], 1, 1))
             unreduced_loss = mean_out # Turn neurons off benchmark
@@ -90,27 +88,16 @@ def train(use_autodiff, S = 500, plot = False, n_samples = 1, log_timing = False
             l0 = losses[0] # Loss at origin. Note that Noisy_BNN always samples first point at origin!
             loss_log.append(np.mean(losses))
             for i in range(len(trainer.model.noises)):
-                noise_offset, Wsmpls = trainer.model.noises[i], trainer.model.Ws[i]
+                noise_offset, W = trainer.model.noises[i], trainer.model.Ws[i]
                 S = noise_offset.shape[0]
                 flat_noise = noise_offset.reshape((S, -1))
-                # if i == 1:
-                #     flat_noise = torch.mean(noise_offset, -1).reshape((S, -1)) 
-
                 flat_noise = flat_noise.cpu().detach().numpy()
                 M, _, _, _ = np.linalg.lstsq(flat_noise, losses - l0)
-                # if i == 1:
-                #     M = M.reshape((-1, 1))
-                #     M = np.tile(M, (1, Wsmpls.shape[3])) / Wsmpls.shape[3]
-               # clf = Ridge(alpha = 0.0)
-              #  clf.fit(flat_noise, losses - l0)
-              #  M = clf.coef_
-                M = M.reshape((Wsmpls.shape[2], Wsmpls.shape[3]))
+                M = M.reshape(W.shape)
+                
                 # Assign gradient manually for optimization
-                M = torch.from_numpy(M).to('cuda')
-                trainer.optimizer.param_groups[0]['params'][i] = None
-                trainer.model.Ws[i].grad = \
-                    M.reshape((1, 1, Wsmpls.shape[2], Wsmpls.shape[3])).repeat(S, 1, 1, 1)
-                trainer.optimizer.param_groups[0]['params'][i] = trainer.model.Ws[i] # Copy weight to optimizer.
+                trainer.model.Ws[i].grad = torch.from_numpy(M).to('cuda')
+                
             if log_timing:
                 print(f'Regression time : {time() - t0}')
             
@@ -142,14 +129,12 @@ def train(use_autodiff, S = 500, plot = False, n_samples = 1, log_timing = False
             loss.backward()
             if log_timing:
                 print(f'Autodiff time : {time() - t0}')
-        print_cuda_mem(f'{idx}, 3')
-   
+
         # Optimization step.
         t0 = time()
         trainer.optimizer.step()
         if log_timing:
             print(f'Optimization time : {time() - t0}')
-        print_cuda_mem(f'{idx}, 4')
 
         for i in range(len(trainer.model.Ws)):
             grad_log[i].append(trainer.model.Ws[i].grad.cpu().numpy())
@@ -157,8 +142,8 @@ def train(use_autodiff, S = 500, plot = False, n_samples = 1, log_timing = False
 
 loss_log, _ = train(False, 100, n_samples = 100)
 true_loss_log, _ = train(True, n_samples = 100)
-plt.plot(loss_log)
 plt.plot(true_loss_log)
+plt.plot(loss_log)
 plt.show()
 
 true_loss, true_grad_log = train(True)
@@ -167,8 +152,8 @@ for S in S_vals:
     print(S)
     loss_log, grad_log = train(False, S)
     
-    true_grad = true_grad_log[1][0][0, 0, :, :]
-    grad = grad_log[1][0][0, 0, :, :]
+    true_grad = true_grad_log[1][0]
+    grad = grad_log[1][0]
     
     diff = true_grad[:10, :] - grad[:10, :]
     errs.append(np.linalg.norm(diff))
