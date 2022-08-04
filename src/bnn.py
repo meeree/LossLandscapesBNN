@@ -69,9 +69,11 @@ class Noisy_BNN(nn.Module):
                 self.layers.append(NeuronModel(d2))
                 
         self.Ws = torch.nn.ParameterList(self.Ws) # Makes pytorch notice these.
+        self.ticker = 0 # For picking parameter to optimize.
             
         
     def forward(self, batch : torch.Tensor, stddev) -> torch.Tensor:
+        self.ticker = (self.ticker + 1) % len(self.Ws)
         for i in range(len(self.Ws)):
             # Copies of weight for noisy sampling over batches and S samples.
             noisy_W = self.Ws[i]
@@ -82,16 +84,12 @@ class Noisy_BNN(nn.Module):
         # Add noise.        
         if stddev > 0:
             for i in range(len(self.noises)):
-                noise = torch.normal(mean=0.0, std=stddev * torch.ones_like(self.Ws_noisy[i]))
-                noise[0, :, :, :] = 0.0 # Get loss at origin. Necessary for least squares fit.
-                noise = noise.reshape((noise.shape[0], noise.shape[1], -1))
-                self.noises[i] = torch.zeros_like(self.Ws_noisy[i])
-                if i == 1:
-                    # for s in range(1,noise.shape[0]):
-                    #     noise[s, :, :] = 0.0
-                    #     noise[s, :, s-1] = stddev
-                    noise = noise.reshape(self.noises[i].shape)
-                    self.noises[i][:, :, :, :] = noise[:, :, :, :]   
+                if i == self.ticker: # Only apply noise to one layer at a time.
+                    self.noises[i] = torch.normal(mean=0.0, std=stddev * torch.ones_like(self.Ws_noisy[i]))
+                else:
+                    self.noises[i] = torch.zeros_like(self.Ws_noisy[i])
+                
+                self.noises[i][0, :, :, :] = 0.0 # Get loss at origin. Necessary for least squares fit.
                 self.Ws_noisy[i] += self.noises[i]
             
         T = batch

@@ -18,6 +18,7 @@ from time import time
 import scipy.stats
 import os
 from sklearn.linear_model import Ridge
+from progressbar import ProgressBar
 print(f'Using GPU: {torch.cuda.get_device_name(0)}')
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
@@ -52,7 +53,14 @@ def print_cuda_mem(timestep):
     free = reserved - allocated
     print(f'CUDA Memory Usage {timestep}: Total {total/1e9:.3f}GB, free {free/1e9:.3f}GB, reserved {reserved/1e9:.3f}GB, allocated {allocated/1e9:.3f}GB')
 
-def train(use_autodiff, S = 500, plot = False, n_samples = 1, log_timing = False):
+def plot_weights(trainer):
+    for W in trainer.model.Ws:
+        plt.figure(dpi=500)
+        plt.imshow(W.cpu().detach().numpy(), aspect='auto', cmap='gist_rainbow')
+        plt.colorbar()
+        plt.show()
+        
+def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1, log_timing = False):
     STD = 0.000001
     if use_autodiff:
         STD = 0.0
@@ -67,7 +75,10 @@ def train(use_autodiff, S = 500, plot = False, n_samples = 1, log_timing = False
     trainer.optimizer = torch.optim.Adam(trainer.model.parameters(), lr = CFG.lr)
     dataloader = torch.utils.data.DataLoader(trainer.train_dataset, batch_size=1, shuffle=True)
     loss_log, grad_log = [], [[], []]
-    for idx, (batch, expected) in enumerate(dataloader):
+    pbar = ProgressBar()
+    if plot:
+        plot_weights(trainer)
+    for idx, (batch, expected) in enumerate(pbar(dataloader)):
         trainer.optimizer.zero_grad()
         with torch.set_grad_enabled(use_autodiff):
             t0 = time()
@@ -101,7 +112,7 @@ def train(use_autodiff, S = 500, plot = False, n_samples = 1, log_timing = False
             if log_timing:
                 print(f'Regression time : {time() - t0}')
             
-            if plot and idx % 10 == 0:
+            if plot_debug and idx % 10 == 0:
                 def isolated_scatter(inds):
                     X = trainer.model.noises[1][:,0,inds[0],inds[1]].reshape(-1).detach().cpu().numpy()
                     plt.scatter(X, losses, s=1.3, zorder=1, color='black')
@@ -138,11 +149,14 @@ def train(use_autodiff, S = 500, plot = False, n_samples = 1, log_timing = False
 
         for i in range(len(trainer.model.Ws)):
             grad_log[i].append(trainer.model.Ws[i].grad.cpu().numpy())
+      
+    if plot:
+        plot_weights(trainer)
     return loss_log, grad_log
 
-loss_log, _ = train(False, 100, n_samples = 100)
-true_loss_log, _ = train(True, n_samples = 100)
-plt.plot(true_loss_log)
+loss_log, _ = train(False, 100, n_samples = 100, plot=True)
+true_loss_log, _ = train(True, n_samples = 100, plot=True)
+plt.plot(true_loss_log, '--')
 plt.plot(loss_log)
 plt.show()
 
