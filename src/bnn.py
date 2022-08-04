@@ -94,13 +94,14 @@ class Noisy_BNN(nn.Module):
             
         T = batch
         T = T.unsqueeze(0).repeat(self.S, 1, 1, 1)
-        T = torch.ones_like(T)
+     #   T = torch.ones_like(T)
         for idx, (W, layer) in enumerate(zip(self.Ws_noisy, self.layers)):
             # Note that W is already transposed.
             self.zs[idx] = torch.matmul(T, W)
-            T = torch.sigmoid(self.zs[idx])
-            # T = layer(z.reshape((-1, z.shape[2], z.shape[3])))     
-            # T = T.reshape((self.S, -1, T.shape[1], T.shape[2]))
+            z = self.zs[idx]
+          #  T = torch.sigmoid(self.zs[idx])
+            T = layer(z.reshape((-1, z.shape[2], z.shape[3])))     
+            T = T.reshape((self.S, -1, T.shape[1], T.shape[2]))
         return T
     
 class FH(nn.Module):

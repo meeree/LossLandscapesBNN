@@ -28,7 +28,7 @@ CFG.train_batch_sz = 5
 #CFG.plot = False
 #CFG.plot_all = False
 #CFG.dt = 0.1
-CFG.sim_t = 1
+CFG.sim_t = 1000
 
 def toy_3_dim(S):
     def f(x):
@@ -60,8 +60,21 @@ def plot_weights(trainer):
         plt.colorbar()
         plt.show()
         
+    print(trainer.model.Ws[0].cpu().detach().numpy().shape)
+    W1 = trainer.model.Ws[0].cpu().detach().numpy().reshape((28, 28, -1))
+    plt.figure(dpi=600)
+    for i in range(10):
+        for j in range(10):
+            plt.subplot(10, 10, i*10 + j + 1)
+            W = W1[:, :, i*10 + j]
+            plt.imshow(W, aspect='auto', cmap='seismic')
+            plt.box(False)
+            plt.xticks([])
+            plt.yticks([])
+    plt.show()
+            
 def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1, log_timing = False):
-    STD = 0.000001
+    STD = 0.00001
     if use_autodiff:
         STD = 0.0
         S = 1
@@ -73,7 +86,7 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
     trainer = Trainer()
     trainer.model = Noisy_BNN(S).to('cuda')
     trainer.optimizer = torch.optim.Adam(trainer.model.parameters(), lr = CFG.lr)
-    dataloader = torch.utils.data.DataLoader(trainer.train_dataset, batch_size=1, shuffle=True)
+    dataloader = torch.utils.data.DataLoader(trainer.train_dataset, batch_size=10, shuffle=True)
     loss_log, grad_log = [], [[], []]
     pbar = ProgressBar()
     if plot:
@@ -86,8 +99,8 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
             out = trainer.model(batch.to('cuda'), STD)
             mean_out = torch.mean(out, dim=2)
             target = expected.to('cuda').unsqueeze(0).repeat((out.shape[0], 1, 1))
-            unreduced_loss = mean_out # Turn neurons off benchmark
-            #unreduced_loss = loss_fun(mean_out, target) # MNIST benchmark
+          #  unreduced_loss = mean_out # Turn neurons off benchmark
+            unreduced_loss = loss_fun(mean_out, target) # MNIST benchmark
             losses = torch.mean(unreduced_loss, dim=(1,2))
             if log_timing:
                 print(f'Evaluation time : {time() - t0}')
@@ -154,10 +167,14 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
         plot_weights(trainer)
     return loss_log, grad_log
 
-loss_log, _ = train(False, 100, n_samples = 100, plot=True)
-true_loss_log, _ = train(True, n_samples = 100, plot=True)
+loss_log, _ = train(False, 100, n_samples = 5000, plot=True)
+true_loss_log, _ = train(True, n_samples = 5000, plot=True)
 plt.plot(true_loss_log, '--')
 plt.plot(loss_log)
+plt.legend(['Autodiff', 'Regression'])
+plt.title('MNIST Benchmark ANN')
+plt.xlabel('Batch Index')
+plt.ylabel('Loss (MSE)')
 plt.show()
 
 true_loss, true_grad_log = train(True)
