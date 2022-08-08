@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Created on Sun Jul 24 15:29:15 2022
@@ -25,10 +26,11 @@ os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 CFG.n_samples_val = 500
 CFG.test_batch_sz = 250
 CFG.train_batch_sz = 5
-#CFG.plot = False
-#CFG.plot_all = False
+CFG.plot = False
+CFG.plot_all = False
 #CFG.dt = 0.1
 CFG.sim_t = 1000
+#CFG.use_DNN = True
 
 def toy_3_dim(S):
     def f(x):
@@ -73,12 +75,11 @@ def plot_weights(trainer):
             plt.yticks([])
     plt.show()
             
-def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1, log_timing = False):
-    STD = 0.00001
+def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1, log_timing = False, STD=1e-2):
     if use_autodiff:
         STD = 0.0
         S = 1
-    CFG.lr = 0.01
+    CFG.lr = 0.005
     CFG.n_samples_train = n_samples
     CFG.identifier = str(n_samples) + '_ NON_SMOOTHED'
     
@@ -125,15 +126,15 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
             if log_timing:
                 print(f'Regression time : {time() - t0}')
             
-            if plot_debug and idx % 10 == 0:
+            if plot_debug and idx % 1 == 0:
                 def isolated_scatter(inds):
                     X = trainer.model.noises[1][:,0,inds[0],inds[1]].reshape(-1).detach().cpu().numpy()
                     plt.scatter(X, losses, s=1.3, zorder=1, color='black')
                     plt.scatter(X[0], l0, s=1.5, zorder=2, color='red')
                     X = np.linspace(np.min(X), np.max(X), 100)
-                    m = trainer.model.Ws[1].grad[0,0,inds[0],inds[1]].cpu()
+                    m = trainer.model.Ws[1].grad[inds[0],inds[1]].cpu()
                     plt.plot(X, m * X + l0, zorder=0)
-                    plt.title(m)
+                    plt.title(f"{m.item():.3f}")
                     plt.xlabel('$w^2_{' + f'{inds[0],inds[1]}' + '}$')
                     plt.ylabel('Loss') 
             
@@ -143,7 +144,7 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
                 plt.subplot(1,3,2)
                 isolated_scatter([0,1])            
                 plt.subplot(1,3,3)
-                isolated_scatter([1,0])
+                isolated_scatter([0,5])
                
                 plt.show()
         else:
@@ -159,6 +160,9 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
         trainer.optimizer.step()
         if log_timing:
             print(f'Optimization time : {time() - t0}')
+            
+        if (idx-1) % 10 == 0:
+            torch.save(trainer.model.state_dict(), f'../data/model_{CFG.identifier}_{idx}.pt')
 
         for i in range(len(trainer.model.Ws)):
             grad_log[i].append(trainer.model.Ws[i].grad.cpu().numpy())
@@ -167,31 +171,37 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
         plot_weights(trainer)
     return loss_log, grad_log
 
-loss_log, _ = train(False, 100, n_samples = 5000, plot=True)
-true_loss_log, _ = train(True, n_samples = 5000, plot=True)
-plt.plot(true_loss_log, '--')
-plt.plot(loss_log)
-plt.legend(['Autodiff', 'Regression'])
-plt.title('MNIST Benchmark ANN')
-plt.xlabel('Batch Index')
-plt.ylabel('Loss (MSE)')
-plt.show()
+def train_and_compare():
+    loss_log, _ = train(False, 500, n_samples = 500, STD=0.15, plot=True)
+    true_loss_log, _ = train(True, n_samples = 500, plot=True)
+    plt.plot(true_loss_log, '--')
+    plt.plot(loss_log)
+    plt.legend(['Autodiff', 'Regression'])
+    plt.title('MNIST Benchmark ANN')
+    plt.xlabel('Batch Index')
+    plt.ylabel('Loss (MSE)')
+    plt.show()
+train_and_compare()
 
+S_vals, errs = list(range(1000, 1001, 10)), []
+S_vals = [10**(-x) for x in np.linspace(1, 1, 1)]
 true_loss, true_grad_log = train(True)
-S_vals, errs = list(range(1, 75)), []
 for S in S_vals:
-    print(S)
-    loss_log, grad_log = train(False, S)
+    print("S VALUE: ", S)
+    loss_log, grad_log = train(False, S=300, STD=0.15)
     
     true_grad = true_grad_log[1][0]
     grad = grad_log[1][0]
     
-    diff = true_grad[:10, :] - grad[:10, :]
+    diff = true_grad[:, :] - grad[:, :]
     errs.append(np.linalg.norm(diff))
+    
+print("VALS", true_grad[0,0], grad[0,0])
+print(errs)
     
 plt.figure(dpi=500)
 plt.plot(S_vals, errs)
-plt.xlabel('S')
+plt.xlabel('Std')
 plt.ylabel('L2 Error')
 plt.title('First 10 rows')
 plt.show()
@@ -203,27 +213,34 @@ plt.fill_between(range(len(loss_log)), loss_log, true_loss, alpha=0.5, color='gr
 plt.legend(['Regression', 'Autodiff'], prop={'size': 6})
 plt.show()
 
+vmin = min(np.min(true_grad), np.min(grad))
+vmax = max(np.max(true_grad), np.max(grad))
 plt.figure(dpi=500)
 plt.subplot(2,2,1)
-plt.imshow(true_grad[:10, :], aspect='auto', cmap='gist_rainbow')
+plt.imshow(true_grad[:, :], aspect='auto', cmap='hot', vmin=vmin, vmax=vmax)
 plt.title('Autodiff Gradient')
 plt.xticks([])
 plt.yticks([])
 plt.colorbar()
 plt.subplot(2,2,2)
-plt.imshow(grad[:10, :], aspect='auto', cmap='gist_rainbow')
+plt.imshow(grad[:, :], aspect='auto', cmap='hot', vmin=vmin, vmax=vmax)
 plt.title('Regression Gradient')
 plt.xticks([])
 plt.yticks([])
 plt.colorbar()
 
 plt.subplot(2,2,(3,4))
-mn, true_mean = np.mean(grad[:10, :], 1), np.mean(true_grad[:10, :], 1)
+mn, true_mean = np.mean(grad[:, :], 0), np.mean(true_grad[:, :], 0)
 plt.plot(mn)
 plt.plot(true_mean)
 plt.legend(['Regression', 'Autodiff'], prop={'size': 6})
-plt.title('Mean Along Rows')
+plt.title('Mean Along Columns')
 plt.fill_between(range(len(mn)), mn, true_mean, alpha=0.5, color='grey')
+plt.show()
+
+plt.figure()
+plt.plot(grad[:, 5])
+plt.plot(true_grad[:, 5])
 plt.show()
                              
 # if idx == len(dataloader)-1:

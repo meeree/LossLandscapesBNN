@@ -74,6 +74,7 @@ class Noisy_BNN(nn.Module):
         
     def forward(self, batch : torch.Tensor, stddev) -> torch.Tensor:
         self.ticker = (self.ticker + 1) % len(self.Ws)
+        self.ticker = 1
         for i in range(len(self.Ws)):
             # Copies of weight for noisy sampling over batches and S samples.
             noisy_W = self.Ws[i]
@@ -99,7 +100,6 @@ class Noisy_BNN(nn.Module):
             # Note that W is already transposed.
             self.zs[idx] = torch.matmul(T, W)
             z = self.zs[idx]
-          #  T = torch.sigmoid(self.zs[idx])
             T = layer(z.reshape((-1, z.shape[2], z.shape[3])))     
             T = T.reshape((self.S, -1, T.shape[1], T.shape[2]))
         return T
