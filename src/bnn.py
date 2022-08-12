@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import torch
 from torch import nn
 from torchviz import make_dot
+from config import print_cuda_mem
 
 torch.set_default_dtype(torch.float32)
 
@@ -52,7 +53,6 @@ class Noisy_BNN(nn.Module):
         self.dims = [input_dim] + CFG.hidden_layers + [output_dim]
         print('Network dimensions: ' + str(self.dims))
         self.Ws, self.Ws_noisy, self.noises, self.layers = [], [], [], []
-        self.zs = []
         self.S = S
         for d1, d2 in zip(self.dims[:-1], self.dims[1:]):
             # Optimization: store transpose matrices instead of original.
@@ -62,7 +62,6 @@ class Noisy_BNN(nn.Module):
             self.Ws.append(torch.nn.Parameter(W_template.detach()))
             self.Ws_noisy.append(None)
             self.noises.append(None)
-            self.zs.append(None)
             if CFG.use_DNN:
                 self.layers.append(torch.nn.Sigmoid())
             else:
@@ -71,10 +70,11 @@ class Noisy_BNN(nn.Module):
         self.Ws = torch.nn.ParameterList(self.Ws) # Makes pytorch notice these.
         self.ticker = 0 # For picking parameter to optimize.
             
-        
-    def forward(self, batch : torch.Tensor, stddev) -> torch.Tensor:
+       
+    # If S_split is > 0, we break up samples into groups of size S_split. 
+    # This is important when S is too large for memory to directly peform.
+    def forward(self, batch : torch.Tensor, stddev, S_split=-1) -> torch.Tensor:
         self.ticker = (self.ticker + 1) % len(self.Ws)
-        self.ticker = 1
         for i in range(len(self.Ws)):
             # Copies of weight for noisy sampling over batches and S samples.
             noisy_W = self.Ws[i]
@@ -93,16 +93,21 @@ class Noisy_BNN(nn.Module):
                 self.noises[i][0, :, :, :] = 0.0 # Get loss at origin. Necessary for least squares fit.
                 self.Ws_noisy[i] += self.noises[i]
             
-        T = batch
-        T = T.unsqueeze(0).repeat(self.S, 1, 1, 1)
-     #   T = torch.ones_like(T)
-        for idx, (W, layer) in enumerate(zip(self.Ws_noisy, self.layers)):
-            # Note that W is already transposed.
-            self.zs[idx] = torch.matmul(T, W)
-            z = self.zs[idx]
-            T = layer(z.reshape((-1, z.shape[2], z.shape[3])))     
-            T = T.reshape((self.S, -1, T.shape[1], T.shape[2]))
-        return T
+        if S_split < 0:
+            S_split = self.S # Use all samples
+        n_iters = (self.S + S_split - 1) // S_split # Round up
+        res = torch.zeros((self.S, batch.shape[0], batch.shape[1], self.dims[-1])).cuda()
+        for n in range(n_iters):
+            T = batch.unsqueeze(0).repeat(S_split, 1, 1, 1)
+            start, end = S_split*n, S_split*(n+1)
+            for idx, (W, layer) in enumerate(zip(self.Ws_noisy, self.layers)):
+                # Note that W is already transposed.
+                W_split = W[start:end, :, :, :]
+                z = torch.matmul(T, W_split)
+                T = layer(z.reshape((-1, z.shape[2], z.shape[3]))) 
+                T = T.reshape((S_split, -1, T.shape[1], T.shape[2]))
+            res[start:end, :, :, :] = T
+        return res
     
 class FH(nn.Module):
     def __init__(self, L):

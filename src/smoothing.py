@@ -19,6 +19,7 @@ from time import time
 import scipy.stats
 import os
 from sklearn.linear_model import Ridge
+from config import print_cuda_mem
 from progressbar import ProgressBar
 print(f'Using GPU: {torch.cuda.get_device_name(0)}')
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
@@ -26,9 +27,9 @@ os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 CFG.n_samples_val = 500
 CFG.test_batch_sz = 250
 CFG.train_batch_sz = 5
-CFG.plot = False
+CFG.plot = True
 CFG.plot_all = False
-#CFG.dt = 0.1
+CFG.dt = 0.01
 CFG.sim_t = 1000
 #CFG.use_DNN = True
 
@@ -47,13 +48,6 @@ def toy_3_dim(S):
         plt.plot(X, m[i] * X)
         plt.title(f'{m[i]:.2f}')
     plt.show()
-
-def print_cuda_mem(timestep):
-    total = torch.cuda.get_device_properties(0).total_memory
-    reserved = torch.cuda.memory_reserved(0)
-    allocated = torch.cuda.memory_allocated(0)
-    free = reserved - allocated
-    print(f'CUDA Memory Usage {timestep}: Total {total/1e9:.3f}GB, free {free/1e9:.3f}GB, reserved {reserved/1e9:.3f}GB, allocated {allocated/1e9:.3f}GB')
 
 def plot_weights(trainer):
     for W in trainer.model.Ws:
@@ -75,17 +69,18 @@ def plot_weights(trainer):
             plt.yticks([])
     plt.show()
             
-def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1, log_timing = False, STD=1e-2):
+def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1, log_timing = False, STD=1e-2, S_split=-1):
     if use_autodiff:
         STD = 0.0
         S = 1
-    CFG.lr = 0.005
+    CFG.lr = 0.0001
     CFG.n_samples_train = n_samples
-    CFG.identifier = str(n_samples) + '_ NON_SMOOTHED'
+    CFG.identifier = str(n_samples) + f'_RUN1_LR0.0001_{use_autodiff}_{S}_{STD}'
     
     torch.manual_seed(0)
     trainer = Trainer()
     trainer.model = Noisy_BNN(S).to('cuda')
+ #   trainer.model.load_state_dict(torch.load('../data/model_5000_RUN1_False_1000_0.15_491.pt'))
     trainer.optimizer = torch.optim.Adam(trainer.model.parameters(), lr = CFG.lr)
     dataloader = torch.utils.data.DataLoader(trainer.train_dataset, batch_size=10, shuffle=True)
     loss_log, grad_log = [], [[], []]
@@ -97,7 +92,7 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
         with torch.set_grad_enabled(use_autodiff):
             t0 = time()
             loss_fun = torch.nn.MSELoss(reduction='none').to('cuda')
-            out = trainer.model(batch.to('cuda'), STD)
+            out = trainer.model(batch.to('cuda'), STD, S_split=S_split)
             mean_out = torch.mean(out, dim=2)
             target = expected.to('cuda').unsqueeze(0).repeat((out.shape[0], 1, 1))
           #  unreduced_loss = mean_out # Turn neurons off benchmark
@@ -105,7 +100,7 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
             losses = torch.mean(unreduced_loss, dim=(1,2))
             if log_timing:
                 print(f'Evaluation time : {time() - t0}')
-        
+
         # Approximate gradient descent using regression.
         if not use_autodiff:
             t0 = time()
@@ -171,17 +166,19 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
         plot_weights(trainer)
     return loss_log, grad_log
 
-def train_and_compare():
-    loss_log, _ = train(False, 500, n_samples = 500, STD=0.15, plot=True)
-    true_loss_log, _ = train(True, n_samples = 500, plot=True)
-    plt.plot(true_loss_log, '--')
-    plt.plot(loss_log)
-    plt.legend(['Autodiff', 'Regression'])
-    plt.title('MNIST Benchmark ANN')
-    plt.xlabel('Batch Index')
-    plt.ylabel('Loss (MSE)')
-    plt.show()
-train_and_compare()
+# def train_and_compare():
+#     loss_log, _ = train(False, 1000, n_samples = 5000, STD=0.15, plot=True, S_split = 250)
+#     plt.plot(loss_log)
+#     print(loss_log)
+#     true_loss_log, _ = train(True, n_samples = 2000, plot=True)
+#     print(true_loss_log)
+#     plt.plot(true_loss_log, '--')
+#     plt.legend(['Autodiff', 'Regression'])
+#     plt.title('MNIST Benchmark ANN')
+#     plt.xlabel('Batch Index')
+#     plt.ylabel('Loss (MSE)')
+#     plt.show()
+# train_and_compare()
 
 S_vals, errs = list(range(1000, 1001, 10)), []
 S_vals = [10**(-x) for x in np.linspace(1, 1, 1)]

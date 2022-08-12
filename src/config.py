@@ -64,4 +64,14 @@ def set_cfg_value(str_key, str_val):
     except KeyError:
         print(f'ERROR: Tried to modify key that does not exist in convig: {str_key}')
         raise
+        
+# Utility function for whole codebase
+def print_cuda_mem(timestep):
+    import torch
+    total = torch.cuda.get_device_properties(0).total_memory
+    reserved = torch.cuda.memory_reserved(0)
+    allocated = torch.cuda.memory_allocated(0)
+    free = reserved - allocated
+    print(f'CUDA Memory Usage {timestep}: Total {total/1e9:.3f}GB, free {free/1e9:.3f}GB, reserved {reserved/1e9:.3f}GB, allocated {allocated/1e9:.3f}GB')
+
     
