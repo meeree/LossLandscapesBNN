@@ -73,7 +73,9 @@ class Noisy_BNN(nn.Module):
        
     # If S_split is > 0, we break up samples into groups of size S_split. 
     # This is important when S is too large for memory to directly peform.
-    def forward(self, batch : torch.Tensor, stddev, S_split=-1) -> torch.Tensor:
+    # If direction is not None, it specifies a direction along which to sample; 
+    # this replaces sampling with normal distribution. Useful for evaluating loss landscape.
+    def forward(self, batch : torch.Tensor, stddev, S_split=-1, direction=None) -> torch.Tensor:
         self.ticker = (self.ticker + 1) % len(self.Ws)
         for i in range(len(self.Ws)):
             # Copies of weight for noisy sampling over batches and S samples.
@@ -87,6 +89,10 @@ class Noisy_BNN(nn.Module):
             for i in range(len(self.noises)):
                 if i == self.ticker: # Only apply noise to one layer at a time.
                     self.noises[i] = torch.normal(mean=0.0, std=stddev * torch.ones_like(self.Ws_noisy[i]))
+                    if direction is not None:
+                        ts = torch.linspace(0.0, 1.0, self.S)
+                        for s in range(self.S):
+                            self.noises[i][s, 0, :, :] = ts[s] * direction.cuda()
                 else:
                     self.noises[i] = torch.zeros_like(self.Ws_noisy[i])
                 

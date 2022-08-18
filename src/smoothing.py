@@ -195,8 +195,31 @@ def plot_accuracy(fl_name):
     plt.ylabel('Accuracy (%)')
     plt.show()
     
-# plot_accuracy('../data/accuracy_15_21_46___08_17_2022_2000_BASELINE_LR0.1_False_1000_0.15_dt0.1.txt')
-# exit()
+def evaluate_losses_along_direction(dts, S = 500, S_split=-1):
+    torch.manual_seed(0)
+    trainer = Trainer()
+    trainer.model = Noisy_BNN(S).to('cuda')
+    direction = torch.ones_like(trainer.model.Ws[1])
+    dataloader = torch.utils.data.DataLoader(trainer.train_dataset, batch_size=10, shuffle=True)
+    loss_fun = torch.nn.MSELoss(reduction='none').to('cuda')
+    for batch, expected in dataloader:
+        target = expected.to('cuda').unsqueeze(0).repeat((S, 1, 1))
+ 
+    losses = np.zeros((len(dts), S))
+    for dt_idx, dt in enumerate(dts):
+        CFG.dt = dt
+        trainer.model.ticker = 0 # Force changes along Ws[1]. Ticker is incremented in forward, so set it to 0 here.
+        out = trainer.model(batch.to('cuda'), 0.0, S_split=S_split, direction=direction)
+        mean_out = torch.mean(out, dim=2)
+        unreduced_loss = loss_fun(mean_out, target) # MNIST benchmark
+        loss_line = torch.mean(unreduced_loss, dim=(1,2))
+        losses[dt_idx, :] = loss_line.detach().cpu().numpy()
+    return losses
+    
+losses = evaluate_losses_along_direction([0.01], S = 1000, S_split = 50)
+plt.plot(losses[0, :])
+plt.show()
+exit()
     
 def train_and_compare():
     loss_log, _ = train(False, 1000, n_samples = 2000, STD=0.15, epochs = 20, plot=True, S_split = 250)
