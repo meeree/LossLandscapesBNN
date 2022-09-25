@@ -146,7 +146,7 @@ class HH_Synaptic(nn.Module):
         Vt = CFG.Vt; Kp = CFG.Kp;
         a_d = CFG.a_d; a_r = CFG.a_r; dt = CFG.dt;
         
-        V = torch.full((B, N, self.L), -70.0).to('cuda')
+        self.V = torch.full((B, N, self.L), -70.0).to('cuda')
         m = torch.zeros((B, N, self.L)).to('cuda')
         n = torch.zeros((B, N, self.L)).to('cuda')
         h = torch.ones((B, N, self.L)).to('cuda')
@@ -161,28 +161,28 @@ class HH_Synaptic(nn.Module):
             G_scaled = (dt / 2) * (pow1 + pow2 + gl + gs * y[:, k-1, :].clone())
             E = pow1 * Ena + pow2 * Ek + gl * El + gs * Vs * y[:, k-1, :].clone()
             
-            V[:, k, :] = (V[:, k-1, :].clone() * (1 - G_scaled) + dt * (E + Iapp)) / (1 + G_scaled)
+            self.V[:, k, :] = (self.V[:, k-1, :].clone() * (1 - G_scaled) + dt * (E + Iapp)) / (1 + G_scaled)
             
-            aN = 0.02 * (V[:, k, :] - 25) / (1 - torch.exp((-V[:, k, :] + 25) / 9.0))
-            aM = 0.182 * (V[:, k, :] + 35) / (1 - torch.exp((-V[:, k, :] - 35) / 9.0))
-            aH = 0.25 * torch.exp((-V[:, k, :] - 90) / 12.0)
+            aN = 0.02 * (self.V[:, k, :] - 25) / (1 - torch.exp((-self.V[:, k, :] + 25) / 9.0))
+            aM = 0.182 * (self.V[:, k, :] + 35) / (1 - torch.exp((-self.V[:, k, :] - 35) / 9.0))
+            aH = 0.25 * torch.exp((-self.V[:, k, :] - 90) / 12.0)
                 
-            bN = -0.002 * (V[:, k, :] - 25) / (1 - torch.exp((V[:, k, :] - 25) / 9.0))
-            bM = -0.124 * (V[:, k, :] + 35) / (1 - torch.exp((V[:, k, :] + 35) / 9.0))
-            bH = 0.25 * torch.exp((V[:, k, :] + 34) / 12.0)
+            bN = -0.002 * (self.V[:, k, :] - 25) / (1 - torch.exp((self.V[:, k, :] - 25) / 9.0))
+            bM = -0.124 * (self.V[:, k, :] + 35) / (1 - torch.exp((self.V[:, k, :] + 35) / 9.0))
+            bH = 0.25 * torch.exp((self.V[:, k, :] + 34) / 12.0)
             
-            if torch.any(V[:, k, :] == 25) or torch.any(V[:, k, :] == -35):
-                aN[torch.where(V[:, k, :] == 25)] = 0.18
-                bN[torch.where(V[:, k, :] == 25)] = 0.08
-                aM[torch.where(V[:, k, :] == -35)] = 1.638
-                bM[torch.where(V[:, k, :] == -35)] = 1.16
+            if torch.any(self.V[:, k, :] == 25) or torch.any(self.V[:, k, :] == -35):
+                aN[torch.where(self.V[:, k, :] == 25)] = 0.18
+                bN[torch.where(self.V[:, k, :] == 25)] = 0.08
+                aM[torch.where(self.V[:, k, :] == -35)] = 1.638
+                bM[torch.where(self.V[:, k, :] == -35)] = 1.16
 
             m[:, k, :] = (aM * dt + (1 - dt / 2 * (aM + bM)) * m[:, k-1, :].clone()) / (dt / 2 * (aM + bM) + 1)
             n[:, k, :] = (aN * dt + (1 - dt / 2 * (aN + bN)) * n[:, k-1, :].clone()) / (dt / 2 * (aN + bN) + 1)
             h[:, k, :] = (aH * dt + (1 - dt / 2 * (aH + bH)) * h[:, k-1, :].clone()) / (dt / 2 * (aH + bH) + 1)    
             y[:, k, :] = (a_d * z[:, k-1, :] * dt + (1 - dt / 2 * (a_d * z[:, k-1, :] + a_r)) * y[:, k-1, :].clone()) / (dt / 2 * (a_d * z[:, k-1, :] + a_r) + 1)
 
-        T = torch.sigmoid((V - Vt) / Kp)
+        T = torch.sigmoid((self.V - Vt) / Kp)
         return T
 
 class HH_Gap(nn.Module):
@@ -240,19 +240,6 @@ class HH_Gap(nn.Module):
                     V_sub = self.V[:, k, :] + 70
                     below = V_sub.le(60)
                     self.V[:, k, :] = torch.where(below, V_sub * (below.sum(axis=1).reshape(-1,1) / self.L) - 70,  V_sub - 70)
-
-        if CFG.plot:
-            plt.figure(figsize=(15,5))
-            plt.subplot(1,2,1)
-            plt.plot(z[0, :, :].detach().cpu().numpy(), linewidth=1.0)
-            plt.xticks(range(0,N+1,500), [f'{i*CFG.dt}' for i in range(0,N+1,500)])
-            plt.xlabel('Time (ms)', fontsize=14)
-            plt.title('A. Weighted Input', fontsize=18)
-            plt.subplot(1,2,2)
-            plt.plot(self.V[0, :, :].detach().cpu().numpy(), linewidth=1.0)
-            plt.xticks(range(0,N+1,500), [f'{i*CFG.dt}' for i in range(0,N+1,500)])
-            plt.xlabel('Time (ms)', fontsize=14)
-            plt.title('B. Voltage Response', fontsize=18)
 
         T = torch.sigmoid((self.V - Vt) / Kp)
         return T

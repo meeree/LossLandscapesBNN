@@ -68,21 +68,34 @@ def plot_weights(trainer):
             plt.xticks([])
             plt.yticks([])
     plt.show()
-      
-def evaluate(model_str):
+    
+def load_noisy_to_trainer(model_str):
+     # Copy parameters from noisy BNN to normal BNN for evaluation using Trainer method.
+    data = torch.load(model_str)
+    trainer = Trainer(False)
+    print(data['Ws.0'].shape)
+    trainer.model = Noisy_BNN(1, data['Ws.0'].shape[0])
+    trainer.model.load_state_dict(data)
+    return trainer
+
+def noisy_to_not(model_str):
     # Copy parameters from noisy BNN to normal BNN for evaluation using Trainer method.
     data = torch.load(model_str)
     trainer = Trainer(False)
     for i in range(len(trainer.model.Ws)):
         # Have to transpose because NoisyBNN stores transposed raw weights, unlike nn.Linear.
         trainer.model.Ws[i].weight.data = torch.transpose(data[f'Ws.{i}'], 0, 1)
+    return trainer
+      
+def evaluate(model_str):
+    trainer = noisy_to_not(model_str)
     return trainer.validate()
       
 def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1, log_timing = False, STD=1e-2, S_split=-1, epochs = 1):
     if use_autodiff:
         STD = 0.0
         S = 1
-    CFG.lr = 0.1
+    CFG.lr = 0.002
     CFG.n_samples_train = n_samples
     CFG.identifier = str(n_samples) + f'_BASELINE_LR{CFG.lr}_{use_autodiff}_{S}_{STD}_dt{CFG.dt}'
     
@@ -161,6 +174,8 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
                 loss.backward()
                 if log_timing:
                     print(f'Autodiff time : {time() - t0}')
+                    
+            print(torch.linalg.norm(trainer.model.Ws[0].grad), torch.linalg.norm(trainer.model.Ws[1].grad))
     
             # Optimization step.
             t0 = time()
@@ -184,17 +199,28 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
         plot_weights(trainer)
     return loss_log, grad_log
 
-def plot_accuracy(fl_name):
+def plot_accuracy(fl_name, title=''):
     results = np.genfromtxt(fl_name, delimiter=',')
     plt.figure(dpi=500)
     plt.plot(results[:,2])
     ticks, inds = np.unique(results[:, 0], return_index=True)
     ticks = ticks.astype(int)
     plt.xticks(inds, ticks)
+    plt.title(title)
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy (%)')
     plt.show()
     
+CFG.hidden_layers = []
+trainer = load_noisy_to_trainer('../data/model_21_29_33___08_26_2022_NLB_LR0.1_False_100_0.15_dt0.1_16_161.pt')
+#plot_weights(trainer)
+plot_accuracy('../data/accuracy_21_29_33___08_26_2022_NLB_LR0.1_False_100_0.15_dt0.1.txt', 'NLB First Try')
+plot_accuracy('../data/accuracy_18_02_33___08_28_2022_NLB3layers_LR0.1_False_100_0.15_dt0.1.txt', 'NLB Three Layer')
+
+plot_accuracy('../data/accuracy_22_56_06___08_17_2022_2000_BASELINE_LR0.1_False_1000_0.15_dt0.05.txt', '50 ms timeframe')
+plot_accuracy('../data/accuracy_18_32_21___08_16_2022_2000_BASELINE_LR0.1_False_1000_0.15.txt', '10 ms timeframe')
+plot_accuracy('../data/accuracy_15_21_46___08_17_2022_2000_BASELINE_LR0.1_False_1000_0.15_dt0.1.txt', '100 ms timeframe')
+exit()
 def evaluate_losses_along_direction(dts, S = 500, S_split=-1):
     torch.manual_seed(0)
     trainer = Trainer()
@@ -216,15 +242,15 @@ def evaluate_losses_along_direction(dts, S = 500, S_split=-1):
         losses[dt_idx, :] = loss_line.detach().cpu().numpy()
     return losses
     
-losses = evaluate_losses_along_direction([0.01], S = 1000, S_split = 50)
-plt.plot(losses[0, :])
-plt.show()
-exit()
+# losses = evaluate_losses_along_direction([0.01], S = 1000, S_split = 50)
+# plt.plot(losses[0, :])
+# plt.show()
+# exit()
     
 def train_and_compare():
-    loss_log, _ = train(False, 1000, n_samples = 2000, STD=0.15, epochs = 20, plot=True, S_split = 250)
-    plt.plot(loss_log)
-    print(loss_log)
+    # loss_log, _ = train(False, 1000, n_samples = 2000, STD=0.15, epochs = 20, plot=True, S_split = 250)
+    # plt.plot(loss_log)
+    # print(loss_log)
     true_loss_log, _ = train(True, n_samples = 2000, epochs = 20, plot=True)
     print(true_loss_log)
     plt.plot(true_loss_log, '--')
