@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import json
 from os.path import exists
 import torch
-from bnn import BNN, Noisy_BNN
+from bnn import *
 from time import time
 import scipy.stats
 import os
@@ -23,6 +23,14 @@ from config import print_cuda_mem
 from progressbar import ProgressBar
 print(f'Using GPU: {torch.cuda.get_device_name(0)}')
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
+
+def simulate_simple_snn():
+    L = 10
+    CFG.sim_t = 25
+    snn = LIF(L)
+    inp = 0.4 * torch.ones((1, CFG.sim_t, L)).to('cuda')
+    out = snn(inp)
+    plt.plot(out.cpu().detach()[0, :, :])
 
 CFG.n_samples_val = 500
 CFG.test_batch_sz = 250
@@ -211,16 +219,16 @@ def plot_accuracy(fl_name, title=''):
     plt.ylabel('Accuracy (%)')
     plt.show()
     
-CFG.hidden_layers = []
-trainer = load_noisy_to_trainer('../data/model_21_29_33___08_26_2022_NLB_LR0.1_False_100_0.15_dt0.1_16_161.pt')
-#plot_weights(trainer)
-plot_accuracy('../data/accuracy_21_29_33___08_26_2022_NLB_LR0.1_False_100_0.15_dt0.1.txt', 'NLB First Try')
-plot_accuracy('../data/accuracy_18_02_33___08_28_2022_NLB3layers_LR0.1_False_100_0.15_dt0.1.txt', 'NLB Three Layer')
+# CFG.hidden_layers = []
+# trainer = load_noisy_to_trainer('../data/model_21_29_33___08_26_2022_NLB_LR0.1_False_100_0.15_dt0.1_16_161.pt')
+# #plot_weights(trainer)
+# plot_accuracy('../data/accuracy_21_29_33___08_26_2022_NLB_LR0.1_False_100_0.15_dt0.1.txt', 'NLB First Try')
+# plot_accuracy('../data/accuracy_18_02_33___08_28_2022_NLB3layers_LR0.1_False_100_0.15_dt0.1.txt', 'NLB Three Layer')
 
-plot_accuracy('../data/accuracy_22_56_06___08_17_2022_2000_BASELINE_LR0.1_False_1000_0.15_dt0.05.txt', '50 ms timeframe')
-plot_accuracy('../data/accuracy_18_32_21___08_16_2022_2000_BASELINE_LR0.1_False_1000_0.15.txt', '10 ms timeframe')
-plot_accuracy('../data/accuracy_15_21_46___08_17_2022_2000_BASELINE_LR0.1_False_1000_0.15_dt0.1.txt', '100 ms timeframe')
-exit()
+# plot_accuracy('../data/accuracy_22_56_06___08_17_2022_2000_BASELINE_LR0.1_False_1000_0.15_dt0.05.txt', '50 ms timeframe')
+# plot_accuracy('../data/accuracy_18_32_21___08_16_2022_2000_BASELINE_LR0.1_False_1000_0.15.txt', '10 ms timeframe')
+# plot_accuracy('../data/accuracy_15_21_46___08_17_2022_2000_BASELINE_LR0.1_False_1000_0.15_dt0.1.txt', '100 ms timeframe')
+# exit()
 def evaluate_losses_along_direction(dts, S = 500, S_split=-1):
     torch.manual_seed(0)
     trainer = Trainer()
@@ -259,6 +267,8 @@ def train_and_compare():
     plt.xlabel('Batch Index')
     plt.ylabel('Loss (MSE)')
     plt.show()
+CFG.sim_t = 200
+CFG.neuron_model = 'LIF'
 train_and_compare()
 exit()
 # evaluate('../data/model_2000_RUN1_LR0.001_True_1_0.0_191.pt')

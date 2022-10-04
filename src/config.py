@@ -25,6 +25,9 @@ CFG = {
         'plot': [True, bool],                  # Plot results during learning/validation.
         'plot_all': [True, bool],
         'use_DNN': [False, bool],              # Use DNN instead of BNN.
+        
+        'lif_beta': [0.95, float],             # Rate of decay to use with leaky integrate and fire model.
+        
     #======================HH=NEURON=PARAMETERS===========================================
         'gna': [40.0, float],
         'gk': [35.0, float],

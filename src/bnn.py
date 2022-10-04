@@ -3,8 +3,8 @@ from config import CFG
 import matplotlib.pyplot as plt
 import torch
 from torch import nn
-from torchviz import make_dot
-from config import print_cuda_mem
+import snntorch as snn
+from snntorch import surrogate
 
 torch.set_default_dtype(torch.float32)
 
@@ -242,4 +242,21 @@ class HH_Gap(nn.Module):
                     self.V[:, k, :] = torch.where(below, V_sub * (below.sum(axis=1).reshape(-1,1) / self.L) - 70,  V_sub - 70)
 
         T = torch.sigmoid((self.V - Vt) / Kp)
+        return T
+    
+class LIF(nn.Module):
+    def __init__(self, L):
+        super().__init__()
+        self.L = L
+        self.V = None
+
+    def forward(self, z):
+        B, N = z.shape[:2] # Batch size and number of timesteps
+        self.V = torch.zeros_like(z)
+        T = torch.zeros_like(self.V)
+        lif = snn.Leaky(beta=CFG.lif_beta, spike_grad = surrogate.fast_sigmoid()).to('cuda')
+        
+        # Simulate LIF neuron over time.
+        for k in range(1, N):
+            T[:, k, :], self.V[:, k, :] = lif(z[:, k-1, :], self.V[:, k-1, :])
         return T
