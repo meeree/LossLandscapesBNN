@@ -5,6 +5,7 @@ from snntorch import surrogate
 import numpy as np
 from matplotlib import pyplot as plt 
 import os
+from config import print_cuda_mem
 print(f'Using GPU: {torch.cuda.get_device_name(0)}')
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
@@ -91,7 +92,7 @@ def lif_mnsit():
             loss.backward()
             optim.step()
     
-def lif_tutorial_training(use_autodiff):
+def lif_tutorial_training(use_autodiff, target_idx):
     from torchvision import datasets, transforms
     from config import CFG
     # Define Network
@@ -101,7 +102,6 @@ def lif_tutorial_training(use_autodiff):
     num_outputs = 10
     
     # Temporal Dynamics
-    num_steps = 25
     beta = 0.95
     class Net(nn.Module):
         def __init__(self, S, input_dim = 28*28, output_dim = 10, hidden_dims = [100]):
@@ -141,7 +141,7 @@ def lif_tutorial_training(use_autodiff):
                     if i == self.ticker: # Only apply noise to one layer at a time.
                         self.noises[i] = torch.normal(mean=0.0, std=stddev * torch.ones_like(self.Ws_noisy[i]))
                         if direction is not None:
-                            ts = torch.linspace(0.0, 1.0, self.S)
+                            ts = torch.linspace(-1.0, 1.0, self.S)
                             for s in range(self.S):
                                 self.noises[i][s, 0, :, :] = ts[s] * direction.cuda()
                     else:
@@ -149,6 +149,7 @@ def lif_tutorial_training(use_autodiff):
                     
                     self.noises[i][0, :, :, :] = 0.0 # Get loss at origin. Necessary for least squares fit.
                     self.Ws_noisy[i] += self.noises[i]
+            print_cuda_mem('after noisy allocation')
                 
             if S_split < 0:
                 S_split = self.S # Use all samples
@@ -169,14 +170,24 @@ def lif_tutorial_training(use_autodiff):
                     for t in range(CFG.sim_t):
                         z[:, :, t, :], mem = layer(z[:, :, t, :], mem)
                         mem_rec[:, :, t, :] = mem
+                    
+                    plt.figure(dpi=500)
+                    plt.subplot(2,1,1)
+                    plt.plot(mem_rec[0, 0, :, :5].cpu().detach())
+                    plt.subplot(2,1,2)
+                    plt.plot(z[0, 0, :, :5].cpu().detach())
+                    plt.show()
+                    
                     T = z
                 res[start:end, :, :, :] = mem_rec
+                print_cuda_mem(n)
+            print_cuda_mem('dealloc')
             return res
     
     # dataloader arguments
-    batch_size = 128
+    batch_size = 1
     data_path='../data/mnist_torch/'
-    CFG.sim_t = 25
+    CFG.sim_t = 200
     
     dtype = torch.float
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -205,17 +216,20 @@ def lif_tutorial_training(use_autodiff):
     loss = nn.CrossEntropyLoss()
     loss_no_reduce = nn.CrossEntropyLoss(reduction='none')
     optimizer = torch.optim.Adam(net.parameters(), lr=5e-4, betas=(0.9, 0.999))
+    torch.manual_seed(1)
     
     def print_batch_accuracy(data, targets, train=False):
-        pass
-        # output, _ = net(data.view(batch_size, -1))
-        # _, idx = output.sum(dim=0).max(1)
-        # acc = np.mean((targets == idx).detach().cpu().numpy())
+        tmp = net.S
+        net.S = 1
+        output = net(data.view(batch_size, -1), 0.0)
+        net.S = tmp
+        idx = torch.argmax(output[0, :, :, :].sum(1), 1)
+        acc = np.mean((targets == idx).detach().cpu().numpy())
     
-        # if train:
-        #     print(f"Train set accuracy for a single minibatch: {acc*100:.2f}%")
-        # else:
-        #     print(f"Test set accuracy for a single minibatch: {acc*100:.2f}%")
+        if train:
+            print(f"Train set accuracy for a single minibatch: {acc*100:.2f}%")
+        else:
+            print(f"Test set accuracy for a single minibatch: {acc*100:.2f}%")
     
     def train_printer():
         print(f"Epoch {epoch}, Iteration {iter_counter}")
@@ -225,15 +239,18 @@ def lif_tutorial_training(use_autodiff):
         print_batch_accuracy(test_data, test_targets, train=False)
         print("\n")
         
+    net.load_state_dict(torch.load('snn_4_450.pt'))
+        
     # Outer training loop
-    for epoch in range(num_epochs):
+    for epoch in range(6, 7):
         iter_counter = 0
         train_batch = iter(train_loader)
     
         # Minibatch training loop
-        for data, targets in train_batch:
+        for data_index, (data, targets) in enumerate(train_batch):
             data = data.to(device)
             targets = targets.to(device)
+            targets[0] = target_idx
                     
             optimizer.zero_grad()
             if use_autodiff:
@@ -243,25 +260,30 @@ def lif_tutorial_training(use_autodiff):
         
                 # initialize the loss & sum over time
                 loss_val = torch.zeros((1), dtype=dtype, device=device)
-                for step in range(num_steps):
+                for step in range(CFG.sim_t):
                     loss_val += loss(spk_rec[0, :, step, :], targets)
         
                 # Gradient calculation
                 loss_val.backward()
             else:
-                print('hio')
-                spk_rec = net(data.view(batch_size, -1), stddev=0.15, S_split=50)
-        
-                # initialize the loss & sum over time
-                losses = torch.zeros(net.S, dtype=dtype, device=device)
-                targets = targets.unsqueeze(0).repeat(net.S, 1)
-                for step in range(num_steps):
-                    predicted = torch.transpose(spk_rec[:, :, step, :],1,2)
-                    l = loss_no_reduce(predicted, targets)
-                    l = torch.mean(l, 1)
-                    losses += l
+                scale = 0.01
+                with torch.no_grad():
+                    direction = scale * torch.ones_like(net.Ws[1])
+                    spk_rec = net(data.view(batch_size, -1), stddev=0.015, S_split=10, direction=direction)
+                    # initialize the loss & sum over time
+                    losses = torch.zeros(net.S, dtype=dtype, device=device)
+                    targets = targets.unsqueeze(0).repeat(net.S, 1)
+                    for step in range(CFG.sim_t):
+                        predicted = torch.transpose(spk_rec[:, :, step, :],1,2)
+                        l = loss_no_reduce(predicted, targets)
+                        l = torch.mean(l, 1)
+                        losses += l
                 
                 losses = losses.cpu().detach().numpy()
+                plt.subplot(5, 2, target_idx + 1)
+                plt.plot(np.linspace(-scale, scale, len(losses[1:])), losses[1:])
+            #    plt.title(f'Timesteps = {CFG.sim_t}, target = {targets[0].cpu().item()}')
+                return
                 l0 = losses[0] # Loss at origin. Note that Noisy_BNN always samples first point at origin!
                 loss_val = l0
                 for i in range(len(net.noises)):
@@ -275,31 +297,43 @@ def lif_tutorial_training(use_autodiff):
                     # Assign gradient manually for optimization
                     net.Ws[i].grad = torch.from_numpy(M).to('cuda')
             optimizer.step()
+            print_cuda_mem('')
     
             # Store loss history for future plotting
             loss_hist.append(loss_val.item())
+            
+            # if data_index % 25 == 0:
+            #     torch.save(net.state_dict(), f'snn_{epoch}_{data_index}.pt')
+            #     plt.figure()
+            #     plt.plot(loss_hist)
+            #     plt.show()
     
             # Test set
-            with torch.no_grad():
-                net.eval() 
-                test_data, test_targets = next(iter(test_loader))
-                test_data = test_data.to(device)
-                test_targets = test_targets.to(device)
-    
-                # Test set forward pass
-                test_spk = net(test_data.view(batch_size, -1), 0.0)
-    
-                # Test set loss
-                test_loss = torch.zeros((1), dtype=dtype, device=device)
-                for step in range(num_steps):
-                    test_loss += loss(test_spk[0, :, step, :], test_targets)   
-                test_loss_hist.append(test_loss.item())
-    
-                # Print train/test loss/accuracy
-                if counter % 50 == 0:
+            if data_index % 25 == 0:
+                with torch.no_grad():
+                    test_data, test_targets = next(iter(test_loader))
+                    test_data = test_data.to(device)
+                    test_targets = test_targets.to(device)
+        
+                    # Test set forward pass
+                    print_cuda_mem('before test')
+                    tmp = net.S
+                    net.S = 1
+                    test_spk = net(test_data.view(batch_size, -1), 0.0)
+                    net.S = tmp # Reset S for sampling
+        
+                    # Test set loss
+                    test_loss = torch.zeros((1), dtype=dtype, device=device)
+                    for step in range(CFG.sim_t):
+                        test_loss += loss(test_spk[0, :, step, :], test_targets)   
+                    test_loss_hist.append(test_loss.item())
+        
+                    # Print train/test loss/accuracy
                     train_printer()
-                counter += 1
-                iter_counter +=1
+                    counter += 1
+                    iter_counter +=1
+            print_cuda_mem('')
+
                 
     # Plot Loss
     plt.figure(facecolor="w", figsize=(10, 5))
@@ -309,9 +343,43 @@ def lif_tutorial_training(use_autodiff):
     plt.legend(["Train Loss", "Test Loss"])
     plt.xlabel("Iteration")
     plt.ylabel("Loss")
+    plt.savefig('loss_mnist_snn.pdf')
     plt.show()
-                
-lif_tutorial_training(False)
+    
+def lif_self_coupled():
+    from config import CFG
+    CFG.sim_t = 200
+    def eval_loss(dim, w, I0, stddev):
+        beta = 0.95
+        lif = snn.Leaky(beta=beta)
+        
+        z = torch.zeros((CFG.sim_t, dim))
+        Vs = torch.zeros_like(z)
+        out = torch.zeros_like(z)
+        for t in range(CFG.sim_t-1):
+            out[t+1, :], Vs[t+1, :] = lif(z[t, :], Vs[t, :]) 
+            inp = I0 + torch.normal(torch.zeros(dim), stddev)
+            z[t+1, :] = inp + out[t+1, :] * w
+        return out, Vs
+    
+    N = 1000
+    ws = np.linspace(0.0, 1.0, N)
+    losses = np.zeros_like(ws)
+    for trial in range(1):
+        out, Vs = eval_loss(N, torch.from_numpy(ws), 0.1, 0.0)
+        losses += torch.mean(out, dim=0).cpu().detach().numpy()
+    plt.plot(ws, losses, '.')
+    plt.xlabel('w')
+    plt.ylabel('loss')
+    plt.show()  
+    
+lif_self_coupled()
+exit()
+        
+plt.figure(dpi=600)
+for i in range(10):
+    print(i)
+    lif_tutorial_training(False, i)
 exit()
     
 num_steps = 50 # number of time steps
