@@ -366,7 +366,7 @@ def lif_self_coupled():
     ws = np.linspace(0.0, 1.0, N)
     losses = np.zeros_like(ws)
     for trial in range(1):
-        out, Vs = eval_loss(N, torch.from_numpy(ws), 0.1, 0.0)
+        out, Vs = eval_loss(N, 0.5, torch.from_numpy(ws), 0.3)
         losses += torch.mean(out, dim=0).cpu().detach().numpy()
     plt.plot(ws, losses, '.')
     plt.xlabel('w')
