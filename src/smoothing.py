@@ -25,6 +25,39 @@ from progressbar import ProgressBar
 from gradient_methods import compute_grad_regression
 print(f'Using GPU: {torch.cuda.get_device_name(0)}')
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
+
+def test_optimized_sampling_ann(random_w):
+    w = torch.ones(1)
+    S = 10
+    eta = 0.1
+    torch.manual_seed(0)
+    losses = []
+    for i in range(1000):
+        inp = torch.rand(1)
+        
+        if random_w:
+            ws = torch.normal(w * torch.ones(S), 0.5)
+            ws[0] = w
+            out = torch.nn.functional.sigmoid(inp * ws)
+            loss = out
+            grad = compute_grad_regression(loss, [ws], [w])[0]
+        else:
+            zs = torch.normal(w * inp * torch.ones(S), 0.5)
+            zs[0] = w * inp
+            out = torch.nn.functional.sigmoid(zs)
+            loss = out
+            dl_dz = compute_grad_regression(loss, [zs], [zs[0]])[0]
+            grad = dl_dz * inp
+
+        losses.append(loss[0])
+        w = w - eta * grad
+    
+    plt.plot(losses)
+    plt.show()
+        
+# test_optimized_sampling_ann(True)
+# test_optimized_sampling_ann(False)
+# exit()
    
 def simulate_simple_snn():
     L = 10
@@ -174,7 +207,7 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
         S = 1
     CFG.lr = 0.002
     CFG.n_samples_train = n_samples
-    CFG.identifier = str(n_samples) + f'_BASELINE_LR{CFG.lr}_{use_autodiff}_{S}_{STD}_dt{CFG.dt}'
+    CFG.identifier = str(n_samples) + f'_MNIST_LR{CFG.lr}_{use_autodiff}_{S}_{STD}'
     
     torch.manual_seed(0)
     trainer = Trainer()
@@ -188,12 +221,16 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
             trainer.model.Ws[i] = torch.ones_like(trainer.model.Ws[i])
     else:
         CFG.Iapp = 0.3
-        CFG.hidden_layers = [30, 30]
+        CFG.hidden_layers = [100]
         trainer.model = Noisy_Weights_BNN(S).to('cuda')
+        trainer.model.load_state_dict(torch.load('../data/model_19_59_19___10_21_2022_2000_MNIST_LR0.002_False_1000_0.05_0_191.pt'))
+        W2 = trainer.model.Ws[1].clone()
+        trainer.model.load_state_dict(torch.load('../data/model_19_59_19___10_21_2022_2000_MNIST_LR0.002_False_1000_0.05_0_1.pt'))
+        direction = W2 - trainer.model.Ws[1]
         # for i in range(len(trainer.model.Ws)):
         #     trainer.model.Ws[i] = torch.ones_like(trainer.model.Ws[i])
         
-    trainer.optimizer = torch.optim.SGD(trainer.model.parameters(), lr = CFG.lr)
+    trainer.optimizer = torch.optim.Adam(trainer.model.parameters(), lr = CFG.lr)
     loss_log, grad_log, weight_log = [], [[] for w in trainer.model.Ws], [[] for w in trainer.model.Ws]
     pbar = ProgressBar()
     if plot:
@@ -201,7 +238,7 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
         
     for e in range(epochs):
         print(f"ON EPOCH: {e}")
-        dataloader = torch.utils.data.DataLoader(trainer.train_dataset, batch_size=10, shuffle=True)
+        dataloader = torch.utils.data.DataLoader(trainer.train_dataset, batch_size=30, shuffle=True)
         for idx, (batch, expected) in enumerate(dataloader):
             trainer.optimizer.zero_grad()
             with torch.set_grad_enabled(use_autodiff):
@@ -210,7 +247,7 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
                 if turn_off:
                     batch = torch.ones((batch.shape[0], batch.shape[1], trainer.model.Ws[0].shape[0])).cuda()
                     trainer.model.ticker = len(trainer.model.Ws) - 2
-                out = trainer.model(batch.to('cuda'), STD, S_split=S_split)
+                out = trainer.model(batch.to('cuda'), STD, S_split=S_split, direction=direction)
                 mean_out = torch.mean(out, dim=2)
                 target = expected.to('cuda').unsqueeze(0).repeat((out.shape[0], 1, 1))
                 unreduced_loss = mean_out # Turn neurons off benchmark
@@ -219,6 +256,10 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
                 losses = torch.mean(unreduced_loss, dim=(1,2))
                 if log_timing:
                     print(f'Evaluation time : {time() - t0}')
+                    
+            plt.plot(losses.cpu().detach())
+            plt.show()
+            exit()
     
             # Approximate gradient descent using regression.
             if not use_autodiff:
@@ -299,6 +340,7 @@ def plot_accuracy(fl_name, title=''):
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy (%)')
     plt.show()
+
     
 # CFG.hidden_layers = []
 # trainer = load_noisy_to_trainer('../data/model_21_29_33___08_26_2022_NLB_LR0.1_False_100_0.15_dt0.1_16_161.pt')
@@ -337,9 +379,9 @@ def evaluate_losses_along_direction(dts, S = 500, S_split=-1):
 # exit()
     
 def train_and_compare():
-    true_loss_log, true_grad_log, true_ws = train(True, n_samples = 2000, epochs = 1, plot=False, turn_off=True)
-    print(true_loss_log)
-    loss_log, grad_log, ws = train(False, 1000, n_samples = 2000, STD=0.05, epochs = 1, plot=False, S_split = 250, turn_off=True)
+    # true_loss_log, true_grad_log, true_ws = train(True, n_samples = 2000, epochs = 1, plot=False)
+    # print(true_loss_log)
+    loss_log, grad_log, ws = train(False, 1000, n_samples = 2000, STD=0.05, epochs = 1, plot=False, S_split = 250)
     print(loss_log)
     
     for index in range(len(grad_log)):
