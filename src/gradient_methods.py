@@ -45,12 +45,12 @@ def compute_grad_log_trick(losses, param_offsets, parameters, stddev):
     grads = []
     S = losses.shape[0]
     for i in range(len(param_offsets)):
-        smpls = param_offsets[i]
+        smpls = param_offsets[i].reshape(S, -1)
         
         # Sum 1/S * loss(v_i) * (mu_i - v_i) / sigma_i^2 
-        grad = torch.sum(losses.reshape(S, 1) * smpls.reshape(S, -1), 0) / (S * stddev**2)
-        grads.append(grad.reshape(smpls.shape[1:]))
-        
+        grad = torch.sum(losses.reshape(S, 1) * smpls, 0) / (S * stddev**2)
+        grads.append(grad.reshape(parameters[i].shape))
+
     return grads
 
 ########################################################################################

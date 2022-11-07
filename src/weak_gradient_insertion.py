@@ -237,7 +237,7 @@ if __name__ == '__main__':
     loss_hist, acc_hist = [], []
     loss_record, accuracy_record = [], []
     loss_hist_val, acc_hist_val = [], []
-    
+    use_accuracy_for_loss = True
     def eval_loss_weak_grad(batch, labels):
         global losses
         outputs = net(batch)
@@ -245,14 +245,24 @@ if __name__ == '__main__':
         repeat_dims = [WeakGradRaw.S] + [1 for s in labels.shape[1:]]
         start_dim = labels.shape[0]
         labels = labels.repeat(*repeat_dims)
-                             
-        losses = criterion(outputs, labels) # Same shape as outputs.
-        
-        # Break losses into shape (S, batch_size, ...)
-        losses = losses.reshape(-1, batch_size, *losses.shape[1:])
-        mean_dims = list(range(len(losses.shape)))[1:]
-        losses = torch.mean(losses, mean_dims) # Reduce loss in all dims except first.
-        loss = losses[0] # Loss without any randomness in network.
+		
+        # Get accuracy percent correct for each sample.
+        if use_accuracy_for_loss:
+            _, predicted = torch.max(outputs, 1)
+            correct_batch = (predicted == labels).float()
+            correct_batch = torch.mean(correct_batch.reshape(WeakGradRaw.S, -1), 1)
+            losses = 1.0-correct_batch # 0 when accuracy = 1.0, 1 when accuracy = 0.0.
+            loss = torch.mean(outputs[:start_dim]) # THIS IS A TRICK. We just need loss backpropogated to depend on outputs. 
+                                                   # Relationship does not matter since it is dropped when we backprop with WeakGrad. 
+        else:
+            # Use a loss function
+            losses = criterion(outputs, labels) # Same shape as outputs.
+            
+            # Break losses into shape (S, batch_size, ...)
+            losses = losses.reshape(-1, batch_size, *losses.shape[1:])
+            mean_dims = list(range(len(losses.shape)))[1:]
+            losses = torch.mean(losses, mean_dims) # Reduce loss in all dims except first.
+            loss = losses[0] # Loss without any randomness in network.
         return loss, outputs[:start_dim]
     
     for data in train_loader:
@@ -260,40 +270,40 @@ if __name__ == '__main__':
         batch, labels = batch.to(device), labels.to(device)
         break
     
-    T = np.linspace(0.0, 1.0, 140)
-    net.load_state_dict(torch.load('../data/net_CIFAR10_AutoGrad_0_0.pt'))
-    init_W, init_b = net.fc3.weight.data.clone(), net.fc3.bias.data.clone()
-    net.load_state_dict(torch.load('../data/net_CIFAR10_AutoGrad_0_310.pt'))
-    direction_W = net.fc3.weight - init_W
-    direction_b = net.fc3.bias - init_b
+    # T = np.linspace(0.0, 1.0, 140)
+    # net.load_state_dict(torch.load('../data/net_CIFAR10_RegGrad_270.pt'))
+    # init_W, init_b = net.fc3.weight.data.clone(), net.fc3.bias.data.clone()
+    # net.load_state_dict(torch.load('../data/net_CIFAR10_AutoGrad_0_310.pt'))
+    # direction_W = net.fc3.weight - init_W
+    # direction_b = net.fc3.bias - init_b
     
-    for use_smooth in [True, False]:
-        loss_interpolate = []
-        for idx, (t, data) in enumerate(zip(T, train_loader)):
-            # batch, labels = data
-            # batch, labels = batch.to(device), labels.to(device)
+    # for use_smooth in [True, False]:
+    #     loss_interpolate = []
+    #     for idx, (t, data) in enumerate(zip(T, train_loader)):
+    #         # batch, labels = data
+    #         # batch, labels = batch.to(device), labels.to(device)
             
-            from gradient_methods import compute_smoothed_loss
-            print(idx, direction_W.sum())
-            net.fc3.weight.data = init_W + t * direction_W 
-            net.fc3.bias.data = init_b + t * direction_b
-            net.load_state_dict(torch.load(f'../data/net_CIFAR10_AutoGrad_{idx}.pt'))
-            loss, outputs = eval_loss_weak_grad(batch, labels) 
-            smooth_loss = compute_smoothed_loss(losses)
-            if use_smooth:
-                loss_interpolate.append(smooth_loss.cpu().item())
-            else:
-                loss_interpolate.append(loss.cpu().item())
+    #         from gradient_methods import compute_smoothed_loss
+    #         print(idx, direction_W.sum())
+    #         net.fc3.weight.data = init_W + t * direction_W 
+    #         net.fc3.bias.data = init_b + t * direction_b
+    #         net.load_state_dict(torch.load(f'../data/net_CIFAR10_AutoGrad_{idx}.pt'))
+    #         loss, outputs = eval_loss_weak_grad(batch, labels) 
+    #         smooth_loss = compute_smoothed_loss(losses)
+    #         if use_smooth:
+    #             loss_interpolate.append(smooth_loss.cpu().item())
+    #         else:
+    #             loss_interpolate.append(loss.cpu().item())
             
-        plt.plot(list(range(len(T))), loss_interpolate)
-        plt.title('Fixed Batch. ' + ('Smooth' if use_smooth else 'Singular') + ' Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('$\mathcal{L}_{\\theta}^{smooth}(x)$' if use_smooth else '$f(N_{\\theta}(x))$')
-        plt.show()
-    exit()
+    #     plt.plot(list(range(len(T))), loss_interpolate)
+    #     plt.title('Fixed Batch. ' + ('Smooth' if use_smooth else 'Singular') + ' Loss')
+    #     plt.xlabel('Epoch')
+    #     plt.ylabel('$\mathcal{L}_{\\theta}^{smooth}(x)$' if use_smooth else '$f(N_{\\theta}(x))$')
+    #     plt.show()
+    # exit()
         
     
-    for epoch in range(140):
+    for epoch in range(10000):
       model_str = f'../data/net_CIFAR10_{method_str}_{epoch}.pt'
       torch.save(net.state_dict(), model_str)
       running_loss = 0.0

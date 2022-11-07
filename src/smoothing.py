@@ -22,7 +22,7 @@ from torchviz import make_dot
 from sklearn.linear_model import Ridge
 from config import print_cuda_mem
 from progressbar import ProgressBar
-from gradient_methods import compute_grad_regression
+from gradient_methods import compute_grad_regression, compute_grad_log_trick, compute_smoothed_loss
 print(f'Using GPU: {torch.cuda.get_device_name(0)}')
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
@@ -201,11 +201,11 @@ def evaluate(model_str):
     trainer = noisy_to_not(model_str)
     return trainer.validate()
       
-def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1, log_timing = False, STD=1e-2, S_split=-1, epochs = 1, turn_off = False):
+def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1, log_timing = False, STD=1e-2, T_sim=-1, epochs = 1, turn_off = False):
     if use_autodiff:
         STD = 0.0
         S = 1
-    CFG.lr = 0.002
+    CFG.lr = 0.1
     CFG.n_samples_train = n_samples
     CFG.identifier = str(n_samples) + f'_MNIST_LR{CFG.lr}_{use_autodiff}_{S}_{STD}'
     
@@ -220,25 +220,25 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
         for i in range(len(trainer.model.Ws)):
             trainer.model.Ws[i] = torch.ones_like(trainer.model.Ws[i])
     else:
-        CFG.Iapp = 0.3
+        # CFG.Iapp = 0.3
         CFG.hidden_layers = [100]
         trainer.model = Noisy_Weights_BNN(S).to('cuda')
-        trainer.model.load_state_dict(torch.load('../data/model_19_59_19___10_21_2022_2000_MNIST_LR0.002_False_1000_0.05_0_191.pt'))
-        W2 = trainer.model.Ws[1].clone()
-        trainer.model.load_state_dict(torch.load('../data/model_19_59_19___10_21_2022_2000_MNIST_LR0.002_False_1000_0.05_0_1.pt'))
-        direction = W2 - trainer.model.Ws[1]
-        # for i in range(len(trainer.model.Ws)):
-        #     trainer.model.Ws[i] = torch.ones_like(trainer.model.Ws[i])
+        
+        # trainer.model.load_state_dict(torch.load('../data/model_19_59_19___10_21_2022_2000_MNIST_LR0.002_False_1000_0.05_0_191.pt'))
+        # W2 = trainer.model.Ws[1].clone()
+        # trainer.model.load_state_dict(torch.load('../data/model_19_59_19___10_21_2022_2000_MNIST_LR0.002_False_1000_0.05_0_1.pt'))
+        # direction = W2 - trainer.model.Ws[1]
         
     trainer.optimizer = torch.optim.Adam(trainer.model.parameters(), lr = CFG.lr)
     loss_log, grad_log, weight_log = [], [[] for w in trainer.model.Ws], [[] for w in trainer.model.Ws]
+    smooth_loss_log = []
     pbar = ProgressBar()
     if plot:
         plot_weights(trainer)
         
     for e in range(epochs):
         print(f"ON EPOCH: {e}")
-        dataloader = torch.utils.data.DataLoader(trainer.train_dataset, batch_size=30, shuffle=True)
+        dataloader = torch.utils.data.DataLoader(trainer.train_dataset, batch_size=50, shuffle=True)
         for idx, (batch, expected) in enumerate(dataloader):
             trainer.optimizer.zero_grad()
             with torch.set_grad_enabled(use_autodiff):
@@ -247,30 +247,30 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
                 if turn_off:
                     batch = torch.ones((batch.shape[0], batch.shape[1], trainer.model.Ws[0].shape[0])).cuda()
                     trainer.model.ticker = len(trainer.model.Ws) - 2
-                out = trainer.model(batch.to('cuda'), STD, S_split=S_split, direction=direction)
+                out = trainer.model(batch.to('cuda'), STD, T_sim=T_sim)
                 mean_out = torch.mean(out, dim=2)
                 target = expected.to('cuda').unsqueeze(0).repeat((out.shape[0], 1, 1))
                 unreduced_loss = mean_out # Turn neurons off benchmark
-                if not turn_off:
-                    unreduced_loss = loss_fun(mean_out, target) # MNIST benchmark
-                losses = torch.mean(unreduced_loss, dim=(1,2))
+                # if not turn_off:
+                    # unreduced_loss = loss_fun(mean_out, target) # MNIST benchmark
+                # losses = torch.mean(unreduced_loss, dim=(1,2))
+                
+                losses = (torch.argmax(target, 2) == torch.argmax(mean_out, 2)).float()
+                losses = 1 - torch.mean(losses, 1)
                 if log_timing:
                     print(f'Evaluation time : {time() - t0}')
-                    
-            plt.plot(losses.cpu().detach())
-            plt.show()
-            exit()
     
             # Approximate gradient descent using regression.
             if not use_autodiff:
                 t0 = time()
                 loss_log.append(losses[0].cpu().item())
-                grads = compute_grad_regression(losses, trainer.model.noises, trainer.model.Ws)
+                smooth_loss_log.append(compute_smoothed_loss(losses).cpu().item())
+                grads = compute_grad_log_trick(losses, trainer.model.noises, trainer.model.Ws, STD)
                 for i in range(len(trainer.model.Ws)):
                     trainer.model.Ws[i].grad = grads[i]
                     
                 if log_timing:
-                    print(f'Regression time : {time() - t0}')
+                    print(f'Gradient compute time : {time() - t0}')
                 
                 if plot_debug and idx % 1 == 0:
                     def isolated_scatter(inds):
@@ -298,6 +298,7 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
                 t0 = time()
                 loss = losses[0]
                 loss_log.append(loss.cpu().item())
+                smooth_loss_log.append(loss_log[-1])
                 loss.backward()
                 if log_timing:
                     print(f'Autodiff time : {time() - t0}')
@@ -308,17 +309,28 @@ def train(use_autodiff, S = 500, plot = False, plot_debug = False, n_samples = 1
             if log_timing:
                 print(f'Optimization time : {time() - t0}')
                 
-            if (idx-1) % 10 == 0:
+            if (idx-1) % 50 == 0:
                 model_str = f'../data/model_{trainer.identifier}_{e}_{idx}.pt'
                 torch.save(trainer.model.state_dict(), model_str)
                 print(f'{idx}: ', end='')
-                # accuracy = evaluate(model_str)
-                # print(f'{e}, {idx}, {accuracy}, {loss_log[-1]}', file=accuracy_out)
-                # accuracy_out.flush()
                 
                 if plot:
                     plt.plot(loss_log)
+                    plt.title('Singular Loss')
                     plt.show()
+                    plt.plot(smooth_loss_log)
+                    plt.title('Smooth Loss')
+                    plt.show()
+                                  
+                    V = trainer.model.layers[0].V.detach().cpu().numpy()
+                    plt.plot(V[0, :, :])
+                    plt.show()
+                    
+            if idx == len(dataloader) - 1:
+                accuracy = evaluate(model_str)
+                print(f'{e}, {idx}, {accuracy}, {loss_log[-1]}', file=accuracy_out)
+                print(f'{e}, {idx}, {accuracy}, {loss_log[-1]}')
+                accuracy_out.flush()
     
             for i in range(len(trainer.model.Ws)):
                 grad_log[i].append(trainer.model.Ws[i].grad.cpu().numpy())
@@ -341,18 +353,15 @@ def plot_accuracy(fl_name, title=''):
     plt.ylabel('Accuracy (%)')
     plt.show()
 
-    
-# CFG.hidden_layers = []
-# trainer = load_noisy_to_trainer('../data/model_21_29_33___08_26_2022_NLB_LR0.1_False_100_0.15_dt0.1_16_161.pt')
-# #plot_weights(trainer)
-# plot_accuracy('../data/accuracy_21_29_33___08_26_2022_NLB_LR0.1_False_100_0.15_dt0.1.txt', 'NLB First Try')
-# plot_accuracy('../data/accuracy_18_02_33___08_28_2022_NLB3layers_LR0.1_False_100_0.15_dt0.1.txt', 'NLB Three Layer')
-
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! BEST RESULTS SO FAR !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# plot_accuracy('../data/accuracy_17_31_09___11_04_2022_2000_MNIST_LR0.002_False_100_0.05.txt', 'SNN?')
 # plot_accuracy('../data/accuracy_22_56_06___08_17_2022_2000_BASELINE_LR0.1_False_1000_0.15_dt0.05.txt', '50 ms timeframe')
 # plot_accuracy('../data/accuracy_18_32_21___08_16_2022_2000_BASELINE_LR0.1_False_1000_0.15.txt', '10 ms timeframe')
 # plot_accuracy('../data/accuracy_15_21_46___08_17_2022_2000_BASELINE_LR0.1_False_1000_0.15_dt0.1.txt', '100 ms timeframe')
 # exit()
-def evaluate_losses_along_direction(dts, S = 500, S_split=-1):
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+def evaluate_losses_along_direction(dts, S = 500, T_sim=-1):
     torch.manual_seed(0)
     trainer = Trainer()
     trainer.model = Noisy_BNN(S).to('cuda')
@@ -366,25 +375,26 @@ def evaluate_losses_along_direction(dts, S = 500, S_split=-1):
     for dt_idx, dt in enumerate(dts):
         CFG.dt = dt
         trainer.model.ticker = 0 # Force changes along Ws[1]. Ticker is incremented in forward, so set it to 0 here.
-        out = trainer.model(batch.to('cuda'), 0.0, S_split=S_split, direction=direction)
+        out = trainer.model(batch.to('cuda'), 0.0, T_sim=T_sim, direction=direction)
         mean_out = torch.mean(out, dim=2)
         unreduced_loss = loss_fun(mean_out, target) # MNIST benchmark
         loss_line = torch.mean(unreduced_loss, dim=(1,2))
         losses[dt_idx, :] = loss_line.detach().cpu().numpy()
     return losses
     
-# losses = evaluate_losses_along_direction([0.01], S = 1000, S_split = 50)
+# losses = evaluate_losses_along_direction([0.01], S = 1000, T_sim = 50)
 # plt.plot(losses[0, :])
 # plt.show()
 # exit()
     
 def train_and_compare():
-    # true_loss_log, true_grad_log, true_ws = train(True, n_samples = 2000, epochs = 1, plot=False)
+    CFG.test_batch_size = 500
+    # true_loss_log, true_grad_log, true_ws = train(True, n_samples = 2000, epochs = 1000, plot=True)
     # print(true_loss_log)
-    loss_log, grad_log, ws = train(False, 1000, n_samples = 2000, STD=0.05, epochs = 1, plot=False, S_split = 250)
+    loss_log, grad_log, ws = train(False, 100, n_samples = 2000, STD=0.15, epochs = 1000, plot=True, T_sim = -1, log_timing = False)
     print(loss_log)
     
-    for index in range(len(grad_log)):
+    for index in range(len(grad_log)):  
         grad_log = [m.flatten() for m in grad_log[index]]
         true_grad_log = [m.flatten() for m in true_grad_log[index]]
                
@@ -401,9 +411,10 @@ def train_and_compare():
             # plt.ylabel('Loss (MSE)')
             plt.show()
     
-CFG.sim_t = 200
-CFG.neuron_model = 'LIF'
-CFG.lif_beta = 0.3
+CFG.dt = 0.1
+CFG.sim_t = 300
+# CFG.neuron_model = 'LIF'
+# CFG.lif_beta = 0.3
 train_and_compare()
 exit()
 # evaluate('../data/model_2000_RUN1_LR0.001_True_1_0.0_191.pt')
@@ -487,3 +498,10 @@ plt.show()
 #     plt.suptitle(STD)
 #     plt.show()
 #     print(loss_log)
+
+    
+# CFG.hidden_layers = []
+# trainer = load_noisy_to_trainer('../data/model_21_29_33___08_26_2022_NLB_LR0.1_False_100_0.15_dt0.1_16_161.pt')
+# #plot_weights(trainer)
+# plot_accuracy('../data/accuracy_21_29_33___08_26_2022_NLB_LR0.1_False_100_0.15_dt0.1.txt', 'NLB First Try')
+# plot_accuracy('../data/accuracy_18_02_33___08_28_2022_NLB3layers_LR0.1_False_100_0.15_dt0.1.txt', 'NLB Three Layer')
