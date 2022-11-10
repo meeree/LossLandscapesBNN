@@ -140,58 +140,6 @@ class FH(nn.Module):
             S[:, k, :] = S[:, k-1, :] + dt * 0.08 * (V[:, k-1, :] + 0.7 - 0.8 * S[:, k-1, :])
         return V / 2
     
-class HH_Synaptic(nn.Module):
-    def __init__(self, L):
-        super().__init__()
-        self.L = L
-        
-    def forward(self, z):
-        B, N = z.shape[:2] # Batch size and number of timesteps
-        gna = CFG.gna; gk = CFG.gk; gl = CFG.gl;
-        Ena = CFG.Ena; Ek = CFG.Ek; El = CFG.El;
-        gs = CFG.gs; Vs = CFG.Vs; Iapp = CFG.Iapp;
-        Vt = CFG.Vt; Kp = CFG.Kp;
-        a_d = CFG.a_d; a_r = CFG.a_r; dt = CFG.dt;
-        
-        self.V = torch.full((B, N, self.L), -70.0).to('cuda')
-        m = torch.zeros((B, N, self.L)).to('cuda')
-        n = torch.zeros((B, N, self.L)).to('cuda')
-        h = torch.ones((B, N, self.L)).to('cuda')
-        y = torch.zeros((B, N, self.L)).to('cuda')
-        pow1 = torch.zeros((B, self.L)).to('cuda')
-        pow2 = torch.zeros((B, self.L)).to('cuda')  
-        
-        for k in range(1, N):
-            pow1 = gna * (m[:, k-1, :].clone() ** 3) * h[:, k-1, :].clone()
-            pow2 = gk * n[:, k-1, :].clone() ** 4
-            
-            G_scaled = (dt / 2) * (pow1 + pow2 + gl + gs * y[:, k-1, :].clone())
-            E = pow1 * Ena + pow2 * Ek + gl * El + gs * Vs * y[:, k-1, :].clone()
-            
-            self.V[:, k, :] = (self.V[:, k-1, :].clone() * (1 - G_scaled) + dt * (E + Iapp)) / (1 + G_scaled)
-            
-            aN = 0.02 * (self.V[:, k, :] - 25) / (1 - torch.exp((-self.V[:, k, :] + 25) / 9.0))
-            aM = 0.182 * (self.V[:, k, :] + 35) / (1 - torch.exp((-self.V[:, k, :] - 35) / 9.0))
-            aH = 0.25 * torch.exp((-self.V[:, k, :] - 90) / 12.0)
-                
-            bN = -0.002 * (self.V[:, k, :] - 25) / (1 - torch.exp((self.V[:, k, :] - 25) / 9.0))
-            bM = -0.124 * (self.V[:, k, :] + 35) / (1 - torch.exp((self.V[:, k, :] + 35) / 9.0))
-            bH = 0.25 * torch.exp((self.V[:, k, :] + 34) / 12.0)
-            
-            if torch.any(self.V[:, k, :] == 25) or torch.any(self.V[:, k, :] == -35):
-                aN[torch.where(self.V[:, k, :] == 25)] = 0.18
-                bN[torch.where(self.V[:, k, :] == 25)] = 0.08
-                aM[torch.where(self.V[:, k, :] == -35)] = 1.638
-                bM[torch.where(self.V[:, k, :] == -35)] = 1.16
-
-            m[:, k, :] = (aM * dt + (1 - dt / 2 * (aM + bM)) * m[:, k-1, :].clone()) / (dt / 2 * (aM + bM) + 1)
-            n[:, k, :] = (aN * dt + (1 - dt / 2 * (aN + bN)) * n[:, k-1, :].clone()) / (dt / 2 * (aN + bN) + 1)
-            h[:, k, :] = (aH * dt + (1 - dt / 2 * (aH + bH)) * h[:, k-1, :].clone()) / (dt / 2 * (aH + bH) + 1)    
-            y[:, k, :] = (a_d * z[:, k-1, :] * dt + (1 - dt / 2 * (a_d * z[:, k-1, :] + a_r)) * y[:, k-1, :].clone()) / (dt / 2 * (a_d * z[:, k-1, :] + a_r) + 1)
-
-        T = torch.sigmoid((self.V - Vt) / Kp)
-        return T
-
 import torch.jit as jit
 class HH_Gap(jit.ScriptModule):
     def __init__(self, L):
@@ -203,7 +151,6 @@ class HH_Gap(jit.ScriptModule):
         self.Iapp = CFG.Iapp; self.Vt = CFG.Vt; self.Kp = CFG.Kp; 
         self.dt = CFG.dt;
         self.INIT = True
-        
        
     @jit.script_method
     def forward(self, z):
@@ -230,7 +177,7 @@ class HH_Gap(jit.ScriptModule):
             self.V = torch.ones((B, N, self.L)).cuda() * -70.0
 
         for k in range(1, N):
-           # m, n, h = K[:, :, k-1, :] # Optimization: concatenate all gating variables in one big tensor since their updates are very similar.
+           # Optimization: concatenate all gating variables in one big tensor since their updates are very similar.
            m = K[0, :, k-1, :]
            n = K[1, :, k-1, :]
            h = K[2, :, k-1, :]
@@ -253,16 +200,14 @@ class HH_Gap(jit.ScriptModule):
            aK[2] = 0.25 * EXP[2]
            bK[:2] = v_off[3:5] * scaled_frac[3:5]          
            bK[2] = 0.25 * EXP[5]
+           aK = torch.nan_to_num(aK, 0.0) # Handle division by zero in EXP.
+           bK = torch.nan_to_num(bK, 0.0)
            
            # Gating Variable update.
            sum_scaled = self.dt/2 * (aK+bK)
            K[:, :, k, :] = (self.dt * aK + (1 - sum_scaled) * K[:, :, k-1, :]) / (1 + sum_scaled) # Note similarity with V update above
 
         T = torch.sigmoid((self.V - self.Vt) / self.Kp)
-        
-        # TODO: HANDLE NANS
-        T = torch.nan_to_num(T, 0.0)
-        
         end.record(torch.cuda.current_stream(torch.cuda.current_device()))
         torch.cuda.synchronize()
         # fraction_of_second = 1000 / (N * self.dt)

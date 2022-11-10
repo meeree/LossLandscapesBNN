@@ -22,7 +22,7 @@ from torchviz import make_dot
 from sklearn.linear_model import Ridge
 from config import print_cuda_mem
 from progressbar import ProgressBar
-from gradient_methods import compute_grad_regression, compute_grad_log_trick, compute_smoothed_loss
+from gradient_methods import *
 print(f'Using GPU: {torch.cuda.get_device_name(0)}')
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
@@ -391,7 +391,7 @@ def train_and_compare():
     CFG.test_batch_size = 500
     # true_loss_log, true_grad_log, true_ws = train(True, n_samples = 2000, epochs = 1000, plot=True)
     # print(true_loss_log)
-    loss_log, grad_log, ws = train(False, 100, n_samples = 2000, STD=0.15, epochs = 1000, plot=True, T_sim = -1, log_timing = False)
+    loss_log, grad_log, ws = train(False, 100, n_samples = 2000, STD=0.15, epochs = 100, plot=True, T_sim = -1, log_timing = False)
     print(loss_log)
     
     for index in range(len(grad_log)):  
@@ -412,7 +412,7 @@ def train_and_compare():
             plt.show()
     
 CFG.dt = 0.1
-CFG.sim_t = 300
+CFG.sim_t = 500
 # CFG.neuron_model = 'LIF'
 # CFG.lif_beta = 0.3
 train_and_compare()
