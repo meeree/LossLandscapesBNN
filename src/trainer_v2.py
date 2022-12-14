@@ -35,6 +35,8 @@ parser.add_argument('--epochs', default=-1, type=int,
                     help='Number of training epochs. Defaults to infinite.')
 parser.add_argument('--epoch-size', default=2000, type=int,
                     help='Number of training samples per epoch.')
+parser.add_argument('--use-snn', default=False, type=bool,
+                    help='Toggles SNN/BNN use.')
 
 class Trainer:
     # If grad_computer is None, use autodiff.
@@ -100,6 +102,8 @@ def train_mnist(args):
     ident = f'N-{args.epoch_size}-lr-{args.lr}-S-{args.grad_samples}-stddev-{args.stddev}-T-{args.timesteps}-dt-{args.dt}-b-{args.batch_size}-method-{args.grad_method}'
     print(f'Identifier: {ident}')
     
+    # CFG.lif_beta = 0.99
+    CFG.neuron_model = 'LIF'
     CFG.n_samples_train = args.epoch_size
     CFG.n_samples_val = 500
     CFG.n_samples_test = 500
@@ -197,18 +201,19 @@ def loss_landscape_mnist(args):
     s1 = dict(torch.load('../data//model_best_582_N-2000-lr-0.01-S-100-stddev-0.15-T-1000-dt-0.1-b-10-method-RegGrad.pt'))
     cur_state = dict(s0)
     loss_interp = []
-    interpolant = torch.linspace(0.0, 1.0, 100)
+    interpolant = torch.linspace(0.0, 0.4, 100)
     for interp in tqdm(interpolant):
         for key in cur_state:
             cur_state[key] = s0[key] + interp * (s1[key] - s0[key])
         trainer.model.load_state_dict(cur_state)
-        plt.figure(dpi=400)
-        plt.plot(trainer.model.layers[1].V.detach().cpu().numpy()[0, :, :])
-        plt.show()
             
         out = trainer.eval_on_batch(batch)
         losses = trainer.eval_losses(loss_fun, out, expected)
         loss_interp.append(losses[0].cpu().item())
+        
+        # plt.figure(dpi=400)
+        # plt.plot(trainer.model.layers[1].V.detach().cpu().numpy()[0, :, :])
+        # plt.show()
         
     plt.plot(interpolant, loss_interp)
     plt.show()
@@ -289,45 +294,81 @@ def reservoir_example(args):
     plt.figure(dpi=500)
     plt.plot(rates[0, :, :])
     plt.show()    
-    
-def loss_landscape_reservoir_turn_off(args):
-    from bnn import HH_Complete
+           
+def fi_curve(args, model_str = '', comp_fn = lambda x: x):
+    from bnn import LIF_Complete, HH_Complete
     from config import CFG
     CFG.dt = args.dt
     CFG.sim_t = args.timesteps
-
-    model = HH_Complete(10).cuda()
-    z = torch.ones((100, CFG.sim_t, 10)).cuda()
-
-    # If we want to turn off the network, it is clear that an optimal solution is 
-    # achieved if all weights are zero. We can analyze loss landscape by interpolation
-    # to this optimum from an initial set of typical weights.
-    s0 = model.W.weight.data
-    s1 = torch.zeros_like(s0)
-    cur_state = s0
-    loss_interp = []
-    interpolant = torch.linspace(0.0, 1.0, 100)
-    for interp in tqdm(interpolant):
-        cur_state = s0 + interp * (s1 - s0)
-        model.W.weight.data = cur_state
-        out = model(z)
-        losses = torch.mean(out, (1,2))
-        for loss in losses.detach().cpu().numpy():
-            loss_interp.append(loss)
-        break
-        
-    plt.plot(interpolant, loss_interp)
-    plt.show()  
+    CFG.Iapp = 0.0
     
-    return interpolant, loss_interp
+    B = 100
+    L = 50
+    if args.use_snn:
+        model = LIF_Complete(L).cuda()
+    else:
+        model = HH_Complete(L).cuda()
+    if len(model_str) > 0:
+        model.load_state_dict(torch.load(model_str))
+    model.W.noisify()
+    W = 2000
+    print(W)
+    Iapp = torch.linspace(0.0, 2, B)
 
-def train_reservoir_turn_off(args):
-    from bnn import HH_Complete
+    inp = torch.zeros((B, CFG.sim_t, L)).cuda()
+    for b in range(B):
+        inp[b, :, :] = Iapp[b]
+        inp[b, :, :-1] = 0.0
+
+    out = model(inp)
+    out = out[:, :, 0:1]
+    
+    for i in [B // 5, B // 2]:
+        plt.plot(model.V[i, :, 0:1].detach().cpu(), linewidth = 1.0)
+        plt.plot(out[i, :, 0:1].detach().cpu(), linewidth = 0.5)
+        plt.title(f'Iapp = {Iapp[i].item():.1f}')
+        plt.show()
+    
+    rate = out[:, -W:, :]
+    rate = torch.logical_and(rate[:, :-1, :] < 0.5, rate[:, 1:, :] >= 0.5).float()
+    rate = rate * (1000 / CFG.dt)
+    rate = torch.mean(rate, 1)
+    print(rate.shape)
+   
+    FI = rate.detach().cpu()
+         
+    start = 0
+    end = -1
+    
+    print(FI.shape)
+    plt.plot(Iapp[start:end], FI[start:end, :])
+    plt.xlabel('Applied Current')
+    plt.ylabel('Firing Rate (Hz)')
+    loss = torch.mean(torch.abs(FI - comp_fn(Iapp).reshape(-1, 1)))
+    plt.title(f'Weights scale: {torch.mean(torch.abs(model.W.W.data))}; loss {loss}')
+    # plt.plot(Iapp, torch.mean(FI, 1), color='black', linestyle = 'dashed', linewidth=5, alpha=0.5)
+    # plt.plot(Iapp[start:end], comp_fn(Iapp)[start:end])
+    plt.show()
+
+def train_reservoir_match(args):
+    from bnn import HH_Complete, LIF_Complete
     from config import CFG
+    torch.manual_seed(0)
     CFG.dt = args.dt
     CFG.sim_t = args.timesteps
+    CFG.Iapp = 0.1
     
-    model = HH_Complete(10).cuda()
+    L = 50
+    model = LIF_Complete(L).cuda()
+    # model.W.noisify()
+    # optim = torch.optim.Adam([model.W.W], lr = args.lr)
+    # z = torch.ones((1, CFG.sim_t, 10)).cuda()
+    # out = model(z)
+    # print(out.shape)
+    # loss = torch.mean(out)
+    # loss.backward()
+    # exit()
+    
     optim = torch.optim.Adam([model.W.W], lr = args.lr)
     grad_computer = None
     if args.grad_method == 'SmoothGrad':
@@ -335,24 +376,330 @@ def train_reservoir_turn_off(args):
     elif args.grad_method == 'RegGrad':
         grad_computer = gm.RegGrad([model.W.W])        
 
-    z = torch.ones((1, CFG.sim_t, 10)).cuda()
-    expected = torch.zeros((1, 10)).cuda()
     trainer = Reservoir_Trainer(model, optim, args.grad_samples, args.stddev, grad_computer)
     loss_fun = torch.nn.MSELoss(reduction='none').to('cuda')
     
+    B = args.batch_size
+    W = 400
+    match_fn = lambda x: (1 - torch.cos(2 * torch.pi * x)) / 2.0
+    
     loss_record = []
     for i in tqdm(range(1000)):
+        s = torch.rand(B).cuda()
+        z = torch.ones((B, CFG.sim_t, L)).cuda() * s.reshape((B,1,1))
+        z[:, :, :-1] = 0.0 # Only input to final neuron
+        match = match_fn(s)
+        expected = torch.ones((B, 1)).cuda() * match.reshape((B, 1))
+        
         out = trainer.eval_on_batch(z)
-        losses = trainer.eval_losses(loss_fun, out, expected)
+        rate = out[:, :, -W:, 0:1]
+        
+        # Discrete rate (more precise/interpretable).
+        # rate = torch.logical_and(rate[:, :, :-1, :] < 0.5, rate[:, :, 1:, :] >= 0.5).float()
+        # rate = rate * (1000 / CFG.dt)
+        # expected = expected * 1000
+        
+        target = expected.reshape((1, -1, 1)).repeat(rate.shape[0], 1, 1)
+        losses = (torch.mean(rate, 2) - target)**2
+        losses = torch.mean(losses, (1, 2))
+     #   losses = trainer.eval_losses(loss_fun, rate, expected)
         trainer.optim_step(losses)
         loss_record.append(losses[0].item())
+        print(torch.mean(expected).item(), torch.mean(rate).item())
         
-        if i % 25 == 0:
-            plt.plot(loss_record)
+        if i % 50 == 0:
+            model_str = f'../data/reservoir{L}_match_{i}_cos_inout2.pt'
+            torch.save(model.state_dict(), model_str)
+            plt.plot([l**0.5 for l in loss_record])
             plt.show()
+            
+            plt.plot(out[0, 0, :, 0].cpu().detach())
+            plt.show()
+            
+            fi_curve(args, model_str, match_fn)
+ 
+   
+def train_reservoir_mean_integrate(args):
+    from bnn import HH_Complete, LIF_Complete
+    from config import CFG
+    # torch.manual_seed(0)
+    CFG.dt = args.dt
+    CFG.sim_t = args.timesteps
+    CFG.Iapp = 0.0
+    
+    L = 50
+    model = LIF_Complete(L).cuda()
+    # model.load_state_dict(torch.load('../data/reservoir50_mean_200_0.pt'))
+    # model.W.noisify()
+    # optim = torch.optim.Adam([model.W.W], lr = args.lr)
+    # z = torch.ones((1, CFG.sim_t, 10)).cuda()
+    # out = model(z)
+    # print(out.shape)
+    # loss = torch.mean(out)
+    # loss.backward()
+    # exit()
+    
+    optim = torch.optim.Adam([model.W.W], lr = args.lr)
+    grad_computer = None
+    if args.grad_method == 'SmoothGrad':
+        grad_computer = gm.SmoothGrad([model.W.W], args.stddev)
+    elif args.grad_method == 'RegGrad':
+        grad_computer = gm.RegGrad([model.W.W])        
+
+    trainer = Reservoir_Trainer(model, optim, args.grad_samples, args.stddev, grad_computer)
+    loss_fun = torch.nn.MSELoss(reduction='none').to('cuda')
+    
+    B = args.batch_size
+    W = 30 # Very small window because we want to have some notion of memory
+    delay = 0
+
+    loss_record = []
+    for i in tqdm(range(1000)):
+        s = torch.rand(B).cuda()
+        mean = torch.ones((B, CFG.sim_t, L)).cuda() * s.reshape((B,1,1))
+        z = torch.normal(mean, 0.0)
+        
+        if False: # Plot integral
+            integral = torch.zeros(CFG.sim_t)
+            integral[0] = z[0,0,0]
+            for p in range(1, CFG.sim_t):
+                integral[p] = integral[p-1] + z[0, p, 0]
+                
+            integral /= CFG.sim_t
+            plt.subplot(2,1,1)
+            plt.plot(z[0, :, 0])
+            plt.xticks([])
+            plt.axhline(s[0], 0, CFG.sim_t)
+            plt.title(s[0].item())
+            plt.subplot(2,1,2)
+            plt.plot(integral)
+            plt.title(integral[-1].item())
+            plt.show()        
+        
+        z[:, :, :-1] = 0.0 # Only input to final neuron
+        if delay > 0:
+            z[:, -delay:, :] = 0.0 # Turn off for final interval
+        expected = torch.ones((B, 1)).cuda() * s.reshape((B, 1))
+        
+        out = trainer.eval_on_batch(z)
+        rate = out[:, :, -W:, 0:1]
+        
+        # Discrete rate (more precise/interpretable).
+        # rate = torch.logical_and(rate[:, :, :-1, :] < 0.5, rate[:, :, 1:, :] >= 0.5).float()
+        # rate = rate * (1000 / CFG.dt)
+        # expected = expected * 1000
+        
+        target = expected.reshape((1, -1, 1)).repeat(rate.shape[0], 1, 1)
+        losses = (torch.mean(rate, 2) - target)**2
+        losses = torch.mean(losses, (1, 2))
+     #   losses = trainer.eval_losses(loss_fun, rate, expected)
+        loss_record.append(losses[0].item())
+        print(torch.mean(torch.abs(torch.mean(rate, 2) - target)), losses[0].item())
+        
+        if i % 50 == 0:
+            model_str = f'../data/reservoir{L}_mean_{i}_{delay}.pt'
+            torch.save(model.state_dict(), model_str)
+            plt.plot([l**0.5 for l in loss_record])
+            plt.show()
+                   
+            plt.subplot(2,1,1)
+            plt.plot(z.cpu().detach()[:, :, -1].transpose(0,1))
+            plt.subplot(2,1,2)
+            integral = torch.zeros(CFG.sim_t)
+            integral[0] = out[0, 0, 0, 0]
+            for i in range(1, CFG.sim_t):
+                integral[i] = out[0, 0, i, 0] + integral[i-1]
+                mn = 0 if i <= W else i - W
+                integral[i] = torch.mean(out[0, 0, mn:i, 0])
+            # integral /= CFG.sim_t
+            plt.plot(integral.cpu().detach())
+            # plt.plot(z[0, :, -1].cpu().detach())
+            plt.axhline(s[0].cpu().item(), 0, CFG.sim_t)
+            # plt.plot(out[0, :, :, 0].cpu().detach().transpose(0,1), linewidth = 0.9)
+            plt.show()
+            
+            fi_curve(args, model_str)  
+        
+        trainer.optim_step(losses)
+        
+def plot_weight_change(model, A, B, L):
+    import glob
+    fls = glob.glob('../data/wang_RUN2_50_*.pt')
+    fls = [fls[i] for i in [0, 1, 2] + list(range(3, len(fls), 3))]
+    Ws = []
+    means = []
+    for fl in fls:
+        model.load_state_dict(torch.load(fl))
+        W = model.W.W.data.cpu().detach()
+        Ws.append(W)
+        mean_grid = torch.zeros((3,3))
+        inds = [0, 15, 30, L]
+        for i in range(3):
+            for j in range(3):
+                mean_grid[i, j] = torch.mean(W[inds[i]:inds[i+1], inds[j]:inds[j+1]])
+        means.append(mean_grid)
+        
+    vmin = min([torch.min(mean) for mean in means])
+    vmax = max([torch.max(mean) for mean in means])
+    abs_max = max(abs(vmin), abs(vmax))
+    vmin = -abs_max; vmax = abs_max
+    
+    plt.figure(figsize = (3,3))
+    for idx in range(len(fls)):  
+        plt.subplot(3, 3, 1 + idx)
+        W = means[idx]
+        im = plt.imshow(W, cmap='PiYG', vmin = vmin, vmax = vmax)
+        plt.box(False); plt.xticks([]); plt.yticks([])
+        if idx == 0:
+            plt.xticks([0, 1, 2], ['A', 'B', 'ext'])
+            plt.gca().xaxis.tick_top()
+            plt.yticks([0, 1, 2], ['A', 'B', 'ext'])
+        # plt.axhline(14.5, 0, L, color = 'black')
+        # plt.axhline(29.5, 0, L, color = 'black')
+        # plt.axvline(14.5, 0, L, color = 'black')
+        # plt.axvline(29.5, 0, L, color = 'black')      
+        
+    fig = plt.gcf()
+    fig.subplots_adjust(right=0.8)  
+    cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
+    plt.colorbar(im, cax=cbar_ax)
+    plt.show()
+        
+def wang_task_train(args, train = True, linear_mu = False):
+    from bnn import HH_Complete, LIF_Complete
+    from config import CFG
+    from torchviz import make_dot
+    # torch.manual_seed(0)
+    CFG.dt = args.dt
+    CFG.sim_t = args.timesteps
+    # CFG.Iapp = 0.5
+    # CFG.lif_beta = 0.99
+    
+    L = 50
+    A = range(0, 15)
+    B = range(15, 30)
+    
+    if args.use_snn:
+        model = LIF_Complete(L).cuda()
+    else:
+        model = HH_Complete(L).cuda()
+    # model.load_state_dict(torch.load('../data/wang_RUN2_50_950.pt'))
+    
+    if not train:
+        plot_weight_change(model, A, B, L)
+    
+    optim = torch.optim.Adam([model.W.W], lr = args.lr)
+    grad_computer = None
+    if args.grad_method == 'SmoothGrad':
+        grad_computer = gm.SmoothGrad([model.W.W], args.stddev)
+    elif args.grad_method == 'RegGrad':
+        grad_computer = gm.RegGrad([model.W.W])        
+
+    trainer = Reservoir_Trainer(model, optim, args.grad_samples, args.stddev, grad_computer)    
+    bsize = args.batch_size
+    std = 0.5
+    firing_window = CFG.sim_t // 10
+    select_rate, deny_rate = 0.8, 0.2 # We want rate to be equal to select_rate if we select this category and equal to deny_rate if not.
+    
+    loss_fun = torch.nn.MSELoss(reduction='none').cuda()
+    loss_record = []
+    for i in tqdm(range(1000)):
+        mu_a, mu_b = torch.rand(bsize).cuda(), torch.rand(bsize).cuda()
+        if linear_mu:
+            mu_a, mu_b = torch.linspace(0, 1.0, bsize).cuda(), torch.zeros(bsize).cuda()
+        z = torch.normal(torch.zeros(bsize, CFG.sim_t, L), std).cuda()
+        z[:, :, A] += mu_a.reshape((bsize, 1, 1)) 
+        z[:, :, B] += mu_b.reshape((bsize, 1, 1))
+        
+        out = trainer.eval_on_batch(z).reshape((-1, CFG.sim_t, L))
+        window = out[:, -firing_window:, :]
+        
+        rA = torch.mean(window[:, :, A], (1, 2))
+        rB = torch.mean(window[:, :, B], (1, 2))
+        
+        targetA = (mu_a > mu_b).float() * (select_rate - deny_rate) + deny_rate
+        targetB = (mu_a < mu_b).float() * (select_rate - deny_rate) + deny_rate
+        targetA = targetA.repeat(args.grad_samples)
+        targetB = targetB.repeat(args.grad_samples)
+        
+        losses = 0.5 * (loss_fun(rA, targetA) + loss_fun(rB, targetB))
+        losses = torch.mean(losses.reshape((-1, bsize)), 1) # Mean over batches, not grad samples.
+        loss_record.append(losses[0].item())
+        
+        accuracy = ((rA[:bsize] > rB[:bsize]) == (mu_a > mu_b)).float()            
+        
+        if train:
+            if i % 5 == 0:
+                print(f'accuracy: {accuracy.mean().item()}')
+                model_str = f'../data/wang_BNN_{L}_{i}.pt'
+                torch.save(model.state_dict(), model_str)
+                plt.plot(loss_record)
+                plt.show()
+                      
+                fi_curve(args, model_str)  
+    
+            trainer.optim_step(losses)
+        else:
+            print(f'accuracy: {accuracy.mean().item()}')
+            if linear_mu:
+                # Compute accuracy versus mean.
+                accuracy = accuracy.detach().cpu()
+                bins = torch.linspace(0.0, 1.0, 30)
+                hist = torch.zeros_like(bins)
+                stride = bsize // len(bins)
+                
+                for k in range(len(bins)):
+                    hist[k] = torch.mean(accuracy[stride*k:stride*(k+1)])
+            
+                plt.plot(bins[:-1], hist[:-1], '-o')
+                plt.xlabel('$|\mu_A - \mu_B|$') 
+                plt.ylabel('Accuracy')
+                plt.show()
+                
+                # Compute reaction time versus mean.
+                thresh = 0.7
+                timesteps = torch.argmax((torch.mean(out[:, :, A], 2) > thresh).float(), 1)
+                reaction_times = timesteps * CFG.dt 
+                plt.plot(mu_a.cpu().detach(), reaction_times.cpu().detach(), '.')
+                plt.ylabel('Reaction time (ms)')
+                plt.xlabel('$|\mu_A - \mu_B|$')
+                
+                import numpy as np
+                fit = np.polyfit(mu_a.cpu().detach().numpy(), reaction_times.cpu().detach().numpy(), 4)
+                p = np.poly1d(fit)
+                plt.plot(mu_a.cpu().detach(), p(mu_a.cpu().detach().numpy()))
+                plt.show()
+            
+            # Analyze neuron responses.
+            for wind in [1, firing_window]:
+                rate_all_A = torch.zeros((bsize, CFG.sim_t))
+                rate_all_B = torch.zeros((bsize, CFG.sim_t))
+                for i in range(CFG.sim_t):
+                    mx = min(CFG.sim_t, wind + i)
+                    rate_all_A[:, i] = torch.mean(out[:, i:mx, A], (1,2))
+                    rate_all_B[:, i] = torch.mean(out[:, i:mx, B], (1,2))
+                        
+                outc = out.cpu().detach()
+                for b in range(1):
+                    pop_matrix = outc[b, :, :31].transpose(0,1)
+                    pop_matrix[A, :] = 1 - pop_matrix[A, :]
+                    pop_matrix[B, :] += 1 # This is just a trick to make imshow color two pops differently.
+                    plt.imshow(pop_matrix, cmap='bwr', aspect='auto', interpolation = 'none')
+                    plt.show()
+                    
+                    plt.title(f'$\mu_A =$ {mu_a[b].item():.2f}, $\mu_B =$ {mu_b[b].item():.2f}')
+                    plt.plot(rate_all_A.detach().cpu()[b, :], color = 'blue')
+                    plt.plot(rate_all_B.detach().cpu()[b, :], color = 'red')
+                    plt.show()
+            return
+        
             
 if __name__ == '__main__':
     args = parser.parse_args()
-    train_reservoir_turn_off(args)
-    #loss_landscape_mnist(args)
+    wang_task_train(args)
+    exit()
+    # fi_curve(args, '../data/reservoir50_mean_250.pt', lambda x : x**2)
+    wang_task_train(args)
+
+    exit()
     #train_mnist(args)

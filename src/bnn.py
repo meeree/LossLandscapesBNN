@@ -142,7 +142,7 @@ class FH(nn.Module):
         return V / 2
     
 class HH_Gap(jit.ScriptModule):
-    def __init__(self, L):
+    def __init__(self, L, device='cuda'):
         super().__init__()
         self.L = L
         self.V = torch.ones(())
@@ -151,6 +151,7 @@ class HH_Gap(jit.ScriptModule):
         self.Iapp = CFG.Iapp; self.Vt = CFG.Vt; self.Kp = CFG.Kp; 
         self.dt = CFG.dt;
         self.INIT = True
+        self.device = device
        
     @jit.script_method
     def forward(self, z):
@@ -160,21 +161,23 @@ class HH_Gap(jit.ScriptModule):
         B, N = z.shape[:2] # Batch size and number of timesteps
         
         # Gating variables
-        K = torch.zeros((3, B, N, self.L)).cuda()
-        K[2] = 1.0 # Start h gating variable at 1 since it is inverse.
-        self.V = torch.ones((B, N, self.L)).cuda() * -70.0
+        K = torch.zeros((3, B, N, self.L)).to(self.device)
+        # K[2] = 1.0 # Start h gating variable at 1 since it is inverse.
+        self.V = torch.ones((B, N, self.L)).to(self.device) * -65.0
         
-        aK = torch.zeros((3, B, self.L)).cuda()
-        bK = torch.zeros((3, B, self.L)).cuda()
+        aK = torch.zeros((3, B, self.L)).to(self.device)
+        bK = torch.zeros((3, B, self.L)).to(self.device)
         
         # Offsets and divisors for gating varialbe update rates.
         # For their uses, see below.
-        offs = torch.tensor([35.0, -25.0, 90.0, 35.0, -25.0, 34.0]).view(-1, 1, 1).cuda()
-        divs = torch.tensor([-9.0, -9.0, -12.0, 9.0, 9.0, 12.0]).view(-1, 1, 1).cuda()
-        muls = torch.tensor([0.182, 0.02, 0.0, -0.124, -0.002, 0.0]).view(-1, 1, 1).cuda()
+        offs = torch.tensor([35.0, -25.0, 90.0, 35.0, -25.0, 34.0]).view(-1, 1, 1).to(self.device)
+        divs = torch.tensor([-9.0, -9.0, -12.0, 9.0, 9.0, 12.0]).view(-1, 1, 1).to(self.device)
+        muls = torch.tensor([0.182, 0.02, 0.0, -0.124, -0.002, 0.0]).view(-1, 1, 1).to(self.device)
+        
+        noise = torch.normal(torch.zeros_like(self.V), 0.0)
         
         if self.INIT:
-            self.V = torch.ones((B, N, self.L)).cuda() * -70.0
+            self.V = torch.ones((B, N, self.L)).to(self.device) * -65.0
 
         for k in range(1, N):
            # Optimization: concatenate all gating variables in one big tensor since their updates are very similar.
@@ -189,7 +192,7 @@ class HH_Gap(jit.ScriptModule):
            E = pow1 * self.Ena + pow2 * self.Ek + self.gl * self.El
            
            # V update.
-           self.V[:, k, :] = (self.dt * (E + self.Iapp + z[:, k-1, :]) +  (1 - G_scaled) * self.V[:, k-1, :]) / (1 + G_scaled)
+           self.V[:, k, :] = (self.dt * (E + self.Iapp + noise[:, k, :] + z[:, k-1, :]) +  (1 - G_scaled) * self.V[:, k-1, :]) / (1 + G_scaled)
            
            # Calculate gating variable intermediate rate quantities.
            v_off = self.V[:, k, :] + offs
@@ -215,9 +218,8 @@ class HH_Gap(jit.ScriptModule):
         # print(time, ', for full second : ', fraction_of_second * time)
         return T
     
-    
-# Class supporting adding S offsets to weight matrix 
 class WeightSampler(jit.ScriptModule):
+    '''Class supporting adding S offsets to weight matrix'''
     def __init__(self, input_dim, output_dim):
         super().__init__()
         self.W = nn.Linear(output_dim, input_dim, bias=False).weight # note transpose
@@ -227,16 +229,17 @@ class WeightSampler(jit.ScriptModule):
         self.set_params(1, 0.0)
         
     def set_params(self, S, stddev):
-        self.S = S 
+        self.S = S
         self.stddev = stddev
     
     def noisify(self):
         # Copies of weight for noisy sampling over batches and S samples.
         self.W_noisy = self.W
         self.W_noisy = self.W_noisy.unsqueeze(0) # Batch size dimension. Need for batch multiplication.
-        self.W_noisy = self.W_noisy.unsqueeze(0).repeat(self.S, 1, 1, 1) # Samples.   
+        self.W_noisy = self.W_noisy.unsqueeze(0).repeat(self.S, 1, 1, 1) # Samples.
 
         self.noise = torch.normal(0.0, self.stddev * torch.ones_like(self.W_noisy))
+        self.noise[0, :, :, :] = 0.0 # No noise added to first sample. This is needed for gradient calculation!
         self.W_noisy += self.noise
 
     @jit.script_method 
@@ -291,15 +294,15 @@ class HH_Complete(jit.ScriptModule):
            h = K[2, :, k-1, :]
 
            # Calculate V intermediate channel quantities.
-           pow1 = self.gna * (m ** 3) * h
-           pow2 = self.gk * n ** 4
+           pow1 = self.gna * (m.clone() ** 3) * h.clone()
+           pow2 = self.gk * n.clone() ** 4
            G_scaled = (self.dt / 2) * (pow1 + pow2 + self.gl)
            E = pow1 * self.Ena + pow2 * self.Ek + self.gl * self.El
-           self.T[:, k, :] = torch.sigmoid((self.V[:, k-1, :] - self.Vt) / self.Kp)
-           z_int = self.W(self.T[:, k, :])
+           self.T[:, k, :] = torch.sigmoid((self.V[:, k-1, :].clone() - self.Vt) / self.Kp)
+           z_int = self.W(self.T[:, k, :].clone())
            
            # V update.
-           self.V[:, k, :] = (self.dt * (E + self.Iapp + z_ext[:, k-1, :] + z_int) +  (1 - G_scaled) * self.V[:, k-1, :]) / (1 + G_scaled)
+           self.V[:, k, :] = (self.dt * (E + self.Iapp + z_ext[:, k-1, :] + 10 * z_int) +  (1 - G_scaled) * self.V[:, k-1, :].clone()) / (1 + G_scaled)
            
            # Calculate gating variable intermediate rate quantities.
            v_off = self.V[:, k, :] + offs
@@ -315,7 +318,7 @@ class HH_Complete(jit.ScriptModule):
            
            # Gating Variable update.
            sum_scaled = self.dt/2 * (aK+bK)
-           K[:, :, k, :] = (self.dt * aK + (1 - sum_scaled) * K[:, :, k-1, :]) / (1 + sum_scaled) # Note similarity with V update above
+           K[:, :, k, :] = (self.dt * aK + (1 - sum_scaled) * K[:, :, k-1, :].clone()) / (1 + sum_scaled) # Note similarity with V update above
 
         end.record(torch.cuda.current_stream(torch.cuda.current_device()))
         torch.cuda.synchronize()
@@ -323,6 +326,31 @@ class HH_Complete(jit.ScriptModule):
         # time = start.elapsed_time(end) / 1000
         # print(time, ', for full second : ', fraction_of_second * time)
         return self.T
+    
+class LIF_Complete(nn.Module):
+    def __init__(self, L):
+        super().__init__()
+        self.L = L
+        self.V = None
+        self.INIT = True
+        self.W = WeightSampler(L, L)
+        self.W.W.requires_grad = True
+       
+    def forward(self, z_ext):
+        B, N = z_ext.shape[:2] # Batch size and number of timesteps
+        if self.INIT:
+            self.V = torch.zeros_like(z_ext)
+        T = torch.zeros_like(self.V)
+        lif = snn.Leaky(beta=CFG.lif_beta, spike_grad = surrogate.fast_sigmoid()).to('cuda')
+        
+        # Simulate LIF neuron over time.
+        noise = torch.normal(torch.zeros_like(self.V), 0.0)
+        for k in range(1, N):
+            inp = (z_ext[:, k-1, :] + CFG.Iapp + noise[:, k, :])
+            inp += self.W(T[:, k-1, :].clone()) # Internal communication
+            T[:, k, :], self.V[:, k, :] = lif(inp, self.V[:, k-1, :])
+            
+        return T
     
 class LIF(nn.Module):
     def __init__(self, L):
@@ -341,5 +369,5 @@ class LIF(nn.Module):
         # Simulate LIF neuron over time.
         noise = torch.normal(torch.zeros_like(self.V), 0.0)
         for k in range(1, N):
-            T[:, k, :], self.V[:, k, :] = lif(z[:, k-1, :] + CFG.Iapp + noise[:, k, :], self.V[:, k-1, :])
+            T[:, k, :], self.V[:, k, :] = lif(0.05 * (z[:, k-1, :] + CFG.Iapp + noise[:, k, :]), self.V[:, k-1, :])
         return T
